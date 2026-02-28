@@ -4,16 +4,46 @@ import { AppError } from '../utils/AppError.js';
 import * as importBatchDal from '../dal/importBatch.dal.js';
 import * as transactionDal from '../dal/transaction.dal.js';
 import * as ruleDal from '../dal/dictionaryRule.dal.js';
+import { MAX_REGEX_PATTERN_LENGTH } from '../utils/validate.js';
 
 const UNCATEGORIZED = 'לא מסווג';
 
 // ── Categorization helpers (shared) ──────────────────────────────────────────
+function isSuspiciousRegexPattern(pattern) {
+  return /(\([^)]*[+*][^)]*\)[+*{])|(\+\+)|(\*\*)|(\{\d+,\}\{\d+,\})/.test(pattern);
+}
+
+function prepareRulesForMatching(rules) {
+  return rules.map((rule) => {
+    if (rule.matchType !== 'regex') return rule;
+
+    const pattern = String(rule.pattern ?? '').trim();
+
+    if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
+      throw new AppError(
+        `Regex pattern is too long for rule ${rule._id} (max ${MAX_REGEX_PATTERN_LENGTH} characters)`,
+        400
+      );
+    }
+
+    if (isSuspiciousRegexPattern(pattern)) {
+      throw new AppError(`Regex pattern is suspicious for rule ${rule._id}`, 400);
+    }
+
+    try {
+      rule._compiledRegex = new RegExp(pattern);
+    } catch {
+      throw new AppError(`Invalid regex pattern for rule ${rule._id}`, 400);
+    }
+
+    return rule;
+  });
+}
+
 function matchRule(businessName, rule) {
-  try {
-    if (rule.matchType === 'exact')    return businessName === rule.pattern;
-    if (rule.matchType === 'contains') return businessName.includes(rule.pattern);
-    if (rule.matchType === 'regex')    return new RegExp(rule.pattern).test(businessName);
-  } catch { return false; }
+  if (rule.matchType === 'exact')    return businessName === rule.pattern;
+  if (rule.matchType === 'contains') return businessName.includes(rule.pattern);
+  if (rule.matchType === 'regex')    return Boolean(rule._compiledRegex?.test(businessName));
   return false;
 }
 
@@ -42,7 +72,7 @@ export async function processImport({ userId, buffer, originalFileName, sourceTy
     const normalized = normalizeExcel(buffer, sourceType);
     if (!normalized.length) throw new AppError('הקובץ לא מכיל עסקאות תקינות', 400);
 
-    const rules = await ruleDal.getRulesByUser(userId);
+    const rules = prepareRulesForMatching(await ruleDal.getRulesByUser(userId));
     let uncategorizedCount = 0;
 
     const docs = normalized.map((tx) => {
@@ -135,7 +165,7 @@ export async function recategorizeBatch(batchId, userId, { force = false } = {})
   const batch = await importBatchDal.getBatchById(batchId, userId);
   if (!batch) throw new AppError('Import batch not found', 404);
 
-  const rules = await ruleDal.getRulesByUser(userId);
+  const rules = prepareRulesForMatching(await ruleDal.getRulesByUser(userId));
 
   // If force=true → recategorize ALL; else → only uncategorized
   const transactions = await transactionDal.getAllTransactionsByBatch(
