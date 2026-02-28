@@ -51,6 +51,29 @@ export const getAllTransactionsByBatch = (importBatchId, userId, { onlyCategory 
 };
 
 /**
+ * Fetch transactions for a batch in chunks using an _id cursor.
+ * @param {string|ObjectId} importBatchId
+ * @param {string|ObjectId} userId
+ * @param {object} options
+ * @param {'לא מסווג'|undefined} options.onlyCategory
+ * @param {number} options.limit
+ * @param {string|ObjectId|undefined} options.lastId - fetch documents with _id > lastId
+ */
+export const getTransactionsByBatchChunk = (
+  importBatchId,
+  userId,
+  { onlyCategory, limit = 500, lastId } = {}
+) => {
+  const filter = { importBatchId, userId };
+  if (onlyCategory) filter.category = onlyCategory;
+  if (lastId) filter._id = { $gt: new mongoose.Types.ObjectId(lastId) };
+
+  return Transaction.find(filter)
+    .sort({ _id: 1 })
+    .limit(limit);
+};
+
+/**
  * Bulk-update a single transaction's category + matchedRuleId.
  * Used during recategorize — faster than findOneAndUpdate per doc.
  */

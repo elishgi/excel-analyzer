@@ -168,39 +168,48 @@ export async function recategorizeBatch(batchId, userId, { force = false } = {})
   const rules = prepareRulesForMatching(await ruleDal.getRulesByUser(userId));
 
   // If force=true → recategorize ALL; else → only uncategorized
-  const transactions = await transactionDal.getAllTransactionsByBatch(
-    batchId,
-    userId,
-    { onlyCategory: force ? undefined : UNCATEGORIZED }
-  );
+  const onlyCategory = force ? undefined : UNCATEGORIZED;
+  const CHUNK_SIZE = 500;
 
-  if (!transactions.length) {
-    return { importBatchId: batchId, updatedCount: 0, uncategorizedCount: 0 };
-  }
-
-  const updates = [];
+  let lastId = null;
+  let updatedCount = 0;
   let uncategorizedCount = 0;
 
-  for (const tx of transactions) {
-    const rule = categorize(tx.businessName, rules);
-    const newCategory = rule ? rule.category : UNCATEGORIZED;
-    if (!rule) uncategorizedCount++;
+  while (true) {
+    const transactions = await transactionDal.getTransactionsByBatchChunk(
+      batchId,
+      userId,
+      { onlyCategory, limit: CHUNK_SIZE, lastId }
+    );
 
-    // Only push update if something changed
-    if (tx.category !== newCategory || String(tx.matchedRuleId) !== String(rule?._id ?? null)) {
-      updates.push({
-        id: tx._id,
-        category: newCategory,
-        matchedRuleId: rule ? rule._id : null,
-      });
+    if (!transactions.length) break;
+
+    const updates = [];
+
+    for (const tx of transactions) {
+      const rule = categorize(tx.businessName, rules);
+      const newCategory = rule ? rule.category : UNCATEGORIZED;
+      if (!rule) uncategorizedCount++;
+
+      // Only push update if something changed
+      if (tx.category !== newCategory || String(tx.matchedRuleId) !== String(rule?._id ?? null)) {
+        updates.push({
+          id: tx._id,
+          category: newCategory,
+          matchedRuleId: rule ? rule._id : null,
+        });
+      }
     }
+
+    if (updates.length) {
+      await transactionDal.bulkUpdateCategories(updates);
+      updatedCount += updates.length;
+    }
+
+    lastId = transactions[transactions.length - 1]._id;
   }
 
-  if (updates.length) {
-    await transactionDal.bulkUpdateCategories(updates);
-  }
-
-  return { importBatchId: batchId, updatedCount: updates.length, uncategorizedCount };
+  return { updatedCount, uncategorizedCount };
 }
 
 // ── Delete batch + transactions ───────────────────────────────────────────────
