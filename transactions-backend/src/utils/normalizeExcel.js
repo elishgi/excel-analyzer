@@ -16,15 +16,62 @@ function cleanAmount(val) {
   return isNaN(n) ? null : n;
 }
 
-function cleanDate(val) {
+function buildUtcDate(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const isValid =
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+
+  return isValid ? date : null;
+}
+
+export function parseDateStrict(val) {
   if (val == null || val === '') return null;
-  // xlsx serial number
+
   if (typeof val === 'number') {
-    const d = xlsx.SSF.parse_date_code(val);
-    if (d) return new Date(d.y, d.m - 1, d.d);
+    const parsed = xlsx.SSF.parse_date_code(val);
+    if (!parsed) {
+      throw new AppError('תאריך לא תקין', 400, `Invalid date format: ${val}`);
+    }
+
+    const serialDate = buildUtcDate(parsed.y, parsed.m, parsed.d);
+    if (!serialDate) {
+      throw new AppError('תאריך לא תקין', 400, `Invalid date format: ${val}`);
+    }
+
+    return serialDate;
   }
-  const d = new Date(val);
-  return isNaN(d.getTime()) ? null : d;
+
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+
+    const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) {
+      const [, y, m, d] = isoMatch;
+      const date = buildUtcDate(Number(y), Number(m), Number(d));
+      if (!date) {
+        throw new AppError('תאריך לא תקין', 400, `Invalid date format: ${val}`);
+      }
+      return date;
+    }
+
+    const slashMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (slashMatch) {
+      const [, d, m, y] = slashMatch;
+      const date = buildUtcDate(Number(y), Number(m), Number(d));
+      if (!date) {
+        throw new AppError('תאריך לא תקין', 400, `Invalid date format: ${val}`);
+      }
+      return date;
+    }
+  }
+
+  throw new AppError('תאריך לא תקין', 400, `Invalid date format: ${val}`);
+}
+
+function cleanDate(val) {
+  return parseDateStrict(val);
 }
 
 // ── Column alias maps ──────────────────────────────────────────────────────────
