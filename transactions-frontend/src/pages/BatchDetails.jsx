@@ -4,10 +4,12 @@ import toast from 'react-hot-toast';
 import api from '../api/axios.js';
 import TransactionsTable from '../components/TransactionsTable.jsx';
 import { downloadExport } from '../utils/download.js';
+import { useAuth } from '../auth/AuthContext.jsx';
 
 export default function BatchDetails() {
   const { id }   = useParams();
   const navigate = useNavigate();
+  const { logout } = useAuth();
 
   const [txs,        setTxs]        = useState([]);
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
@@ -30,6 +32,12 @@ export default function BatchDetails() {
 
   useEffect(() => { load(page); }, [load, page]);
 
+  const handleDownloadUnauthorized = useCallback(() => {
+    logout();
+    navigate('/login', { replace: true });
+  }, [logout, navigate]);
+
+
   const handleRecategorize = async () => {
     const tid = toast.loading('מקטלג מחדש...');
     try {
@@ -51,8 +59,8 @@ export default function BatchDetails() {
         {/* Action buttons — wrap on mobile */}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0 }}>
           <button className="btn btn-ghost btn-sm" onClick={handleRecategorize}>↺ קטלג</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(id, 'csv')}>CSV</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(id, 'xlsx')}>XLSX</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(id, 'csv', { onUnauthorized: handleDownloadUnauthorized })}>CSV</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(id, 'xlsx', { onUnauthorized: handleDownloadUnauthorized })}>XLSX</button>
         </div>
       </div>
 
