@@ -1,0 +1,286 @@
+# ============================================================
+# Excel Analyzer Backend – HTTP Requests (v3)
+# VS Code: install "REST Client" extension → click "Send Request"
+# ============================================================
+
+@baseUrl = http://localhost:3000
+@contentType = application/json
+
+@token = PASTE_YOUR_TOKEN_HERE
+@batchId = PASTE_BATCH_ID_HERE
+@transactionId = PASTE_TRANSACTION_ID_HERE
+@ruleId = PASTE_RULE_ID_HERE
+
+
+###
+# ──────────────────────────────────────────
+# HEALTH
+# ──────────────────────────────────────────
+POST {{baseUrl}}/api/health
+
+
+###
+# ──────────────────────────────────────────
+# AUTH
+# ──────────────────────────────────────────
+
+### Signup
+POST {{baseUrl}}/api/auth/signup
+Content-Type: {{contentType}}
+
+{ "name": "Moshe Cohen", "email": "moshe@example.com", "password": "secret123" }
+
+###
+
+### Login
+POST {{baseUrl}}/api/auth/login
+Content-Type: {{contentType}}
+
+{ "email": "moshe@example.com", "password": "secret123" }
+
+
+###
+# ──────────────────────────────────────────
+# DICTIONARY RULES
+# ──────────────────────────────────────────
+
+### GET all rules
+GET {{baseUrl}}/api/dictionary
+Authorization: Bearer {{token}}
+
+###
+
+### POST exact rule
+POST {{baseUrl}}/api/dictionary
+Content-Type: {{contentType}}
+Authorization: Bearer {{token}}
+
+{ "matchType": "exact", "pattern": "סופר פארם", "category": "בריאות ויופי", "priority": 10 }
+
+###
+
+### POST contains rule
+POST {{baseUrl}}/api/dictionary
+Content-Type: {{contentType}}
+Authorization: Bearer {{token}}
+
+{ "matchType": "contains", "pattern": "רמי לוי", "category": "סופרמרקט", "priority": 5 }
+
+###
+
+### PUT update rule
+PUT {{baseUrl}}/api/dictionary/{{ruleId}}
+Content-Type: {{contentType}}
+Authorization: Bearer {{token}}
+
+{ "category": "קניות כלליות", "priority": 15 }
+
+###
+
+### DELETE rule
+DELETE {{baseUrl}}/api/dictionary/{{ruleId}}
+Authorization: Bearer {{token}}
+
+
+###
+# ──────────────────────────────────────────
+# IMPORTS – העלאת קובץ אקסל
+# ──────────────────────────────────────────
+# ⚠️ REST Client לא תומך בהעלאת קבצים בינאריים.
+# השתמש בפקודות curl:
+#
+# MAX:
+#   curl -X POST http://localhost:3000/api/imports \
+#     -H "Authorization: Bearer YOUR_TOKEN" \
+#     -F "file=@/path/to/file.xlsx" \
+#     -F "sourceType=max"
+#
+# VISA:
+#   curl -X POST http://localhost:3000/api/imports \
+#     -H "Authorization: Bearer YOUR_TOKEN" \
+#     -F "file=@/path/to/file.xlsx" \
+#     -F "sourceType=visa"
+#
+# Expected 201:
+#   { "importBatchId": "...", "insertedCount": 42, "uncategorizedCount": 5 }
+
+###
+
+### GET all batches
+GET {{baseUrl}}/api/imports
+Authorization: Bearer {{token}}
+
+###
+
+### GET batches with pagination
+GET {{baseUrl}}/api/imports?page=1&limit=10
+Authorization: Bearer {{token}}
+
+###
+
+### GET transactions of a batch
+GET {{baseUrl}}/api/imports/{{batchId}}/transactions
+Authorization: Bearer {{token}}
+
+###
+
+### GET transactions filtered by category
+GET {{baseUrl}}/api/imports/{{batchId}}/transactions?category=סופרמרקט
+Authorization: Bearer {{token}}
+
+###
+
+### GET transactions with pagination
+GET {{baseUrl}}/api/imports/{{batchId}}/transactions?page=1&limit=5
+Authorization: Bearer {{token}}
+
+###
+
+### POST recategorize – only uncategorized (default)
+# Expected: { importBatchId, updatedCount, uncategorizedCount }
+POST {{baseUrl}}/api/imports/{{batchId}}/recategorize
+Authorization: Bearer {{token}}
+
+###
+
+### POST recategorize – force ALL transactions
+POST {{baseUrl}}/api/imports/{{batchId}}/recategorize?force=true
+Authorization: Bearer {{token}}
+
+###
+
+### DELETE batch + all its transactions
+# Expected: { message: "deleted", importBatchId, deletedTransactions }
+DELETE {{baseUrl}}/api/imports/{{batchId}}
+Authorization: Bearer {{token}}
+
+###
+
+### GET export as CSV
+# Expected: downloads batch-<id>.csv with BOM for Hebrew Excel support
+GET {{baseUrl}}/api/imports/{{batchId}}/export?format=csv
+Authorization: Bearer {{token}}
+
+###
+
+### GET export as XLSX
+# Expected: downloads batch-<id>.xlsx
+GET {{baseUrl}}/api/imports/{{batchId}}/export?format=xlsx
+Authorization: Bearer {{token}}
+
+
+###
+# ──────────────────────────────────────────
+# TRANSACTIONS
+# ──────────────────────────────────────────
+
+### GET uncategorized (all)
+GET {{baseUrl}}/api/transactions/uncategorized
+Authorization: Bearer {{token}}
+
+###
+
+### GET uncategorized filtered by batch
+GET {{baseUrl}}/api/transactions/uncategorized?importBatchId={{batchId}}
+Authorization: Bearer {{token}}
+
+###
+
+### PATCH manual categorize only
+# Expected: { transactionId, category, ruleCreated: false }
+PATCH {{baseUrl}}/api/transactions/{{transactionId}}/categorize
+Content-Type: {{contentType}}
+Authorization: Bearer {{token}}
+
+{ "category": "מסעדות" }
+
+###
+
+### PATCH categorize + save to dictionary (full params)
+# Expected: { transactionId, category, ruleCreated: true }
+PATCH {{baseUrl}}/api/transactions/{{transactionId}}/categorize
+Content-Type: {{contentType}}
+Authorization: Bearer {{token}}
+
+{
+  "category": "מסעדות",
+  "saveToDictionary": true,
+  "matchType": "contains",
+  "pattern": "מקדונלדס",
+  "priority": 50
+}
+
+###
+
+### PATCH categorize + save (uses businessName as default pattern)
+PATCH {{baseUrl}}/api/transactions/{{transactionId}}/categorize
+Content-Type: {{contentType}}
+Authorization: Bearer {{token}}
+
+{ "category": "דלק", "saveToDictionary": true }
+
+
+###
+# ──────────────────────────────────────────
+# REPORTS / DASHBOARD
+# ──────────────────────────────────────────
+
+### GET summary by category (default)
+# Expected: { groupBy, count, data: [{ category, totalAmount, txCount }] }
+GET {{baseUrl}}/api/reports/summary
+Authorization: Bearer {{token}}
+
+###
+
+### GET summary by category – include uncategorized
+GET {{baseUrl}}/api/reports/summary?includeUncategorized=true
+Authorization: Bearer {{token}}
+
+###
+
+### GET summary by month
+# Expected: { groupBy, count, data: [{ month: "2025-01", totalAmount, txCount }] }
+GET {{baseUrl}}/api/reports/summary?groupBy=month
+Authorization: Bearer {{token}}
+
+###
+
+### GET summary by category_month
+# Expected: { groupBy, count, data: [{ month, category, totalAmount, txCount }] }
+GET {{baseUrl}}/api/reports/summary?groupBy=category_month
+Authorization: Bearer {{token}}
+
+###
+
+### GET summary with date range filter
+GET {{baseUrl}}/api/reports/summary?from=2025-01-01&to=2025-03-31&groupBy=category
+Authorization: Bearer {{token}}
+
+###
+
+### GET summary filtered to specific batch
+GET {{baseUrl}}/api/reports/summary?importBatchId={{batchId}}&groupBy=category
+Authorization: Bearer {{token}}
+
+###
+
+### GET top merchants (default top 10)
+# Expected: { count, data: [{ businessName, totalAmount, txCount }] }
+GET {{baseUrl}}/api/reports/top-merchants
+Authorization: Bearer {{token}}
+
+###
+
+### GET top 5 merchants with date range
+GET {{baseUrl}}/api/reports/top-merchants?limit=5&from=2025-01-01&to=2025-12-31
+Authorization: Bearer {{token}}
+
+###
+
+### Unauthenticated → 401
+GET {{baseUrl}}/api/reports/summary
+
+###
+
+### Unknown route → 404
+GET {{baseUrl}}/api/unknown
