@@ -6,12 +6,13 @@ export const findBudgetPlan = (userId, monthKey) =>
 export const upsertBudgetPlan = (userId, monthKey, payload) =>
   BudgetPlan.findOneAndUpdate(
     { userId, monthKey },
-    {
-      $set: {
-        incomeLines: payload.incomeLines,
-        groups: payload.groups,
-        notes: payload.notes ?? '',
-      },
-    },
+    { $set: payload },
+    { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+  ).lean();
+
+export const updateBudgetManualCells = (userId, monthKey, manualCells) =>
+  BudgetPlan.findOneAndUpdate(
+    { userId, monthKey },
+    { $set: { manualCells } },
     { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
   ).lean();

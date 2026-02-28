@@ -1,19 +1,19 @@
-export const DASHBOARD_GROUPS = ['fixedBills', 'variableExpenses', 'loansCash', 'tithes', 'savings'];
+export const DASHBOARD_GROUPS = ['fixedBills', 'variableExpenses', 'income', 'savings', 'loansCash', 'tithes'];
 
 export const CATEGORY_GROUP_MAP = {
-  income: ['הכנסות', 'משכורת', 'salary', 'income'],
-  savings: ['חסכון', 'חיסכון', 'saving', 'savings', 'השקעות', 'investment'],
   fixedBills: ['שכירות', 'rent', 'חשמל', 'מים', 'ארנונה', 'סלולר', 'אינטרנט', 'מנויים', 'ביטוח', 'גן', 'ועד בית'],
   variableExpenses: ['סופר', 'מכולת', 'דלק', 'אוכל בחוץ', 'מסעדה', 'בזבוזים', 'קניות', 'ביגוד', 'פארם', 'בריאות', 'תחבורה'],
-  loansCash: ['הלוואות', 'הלוואה', 'אשראי', 'מזומן', 'loan', 'cash', 'credit'],
   tithes: ['מעשרות', 'מעשר', 'תרומות', 'donation', 'tithe'],
+  savings: ['חסכון', 'חיסכון', 'saving', 'savings', 'השקעות', 'investment'],
+  loansCash: ['הלוואות', 'הלוואה', 'אשראי', 'מזומן', 'loan', 'cash', 'credit'],
+  income: ['הכנסות', 'משכורת', 'salary', 'income'],
 };
 
 export const GROUP_LABELS = {
-  income: 'הכנסות',
-  savings: 'תוכנית חסכון',
   fixedBills: 'חשבונות ומנויים',
   variableExpenses: 'הוצאות משתנות',
+  income: 'הכנסות',
+  savings: 'תוכנית חסכון',
   loansCash: 'הלוואות/מזומן',
   tithes: 'מעשרות',
 };
