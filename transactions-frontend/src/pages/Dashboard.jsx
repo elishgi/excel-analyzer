@@ -7,6 +7,7 @@ import SummaryChart from '../components/SummaryChart.jsx';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 import { formatDate, formatAmount } from '../utils/date.js';
 import { downloadExport } from '../utils/download.js';
+import { useAuth } from '../auth/AuthContext.jsx';
 
 const STATUS_BADGE = {
   done:       <span className="badge badge-green">הושלם</span>,
@@ -19,6 +20,7 @@ const isMobile = () => window.innerWidth <= 640;
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { logout } = useAuth();
   const [mobile, setMobile] = useState(isMobile());
 
   const [summary,    setSummary]    = useState([]);
@@ -29,6 +31,7 @@ export default function Dashboard() {
   const [totals,     setTotals]     = useState({ total: 0, txCount: 0, uncategorizedCount: 0 });
   const [loading,       setLoading]       = useState(true);
   const [bLoading,      setBLoading]      = useState(false);
+  const [batchesError,  setBatchesError]  = useState('');
   const [actionLoading, setActionLoading] = useState('');
   const [confirmModal,  setConfirmModal]  = useState({ open: false, batchId: null });
   const [from, setFrom] = useState('');
@@ -62,12 +65,21 @@ export default function Dashboard() {
 
   const loadBatches = useCallback(async (p = 1) => {
     setBLoading(true);
+    setBatchesError('');
     try {
       const { data } = await api.get('/api/imports', { params: { page: p, limit: 10 } });
       setBatches(data.data || []);
       setPagination(data.pagination);
+    } catch {
+      setBatchesError('לא הצלחנו לטעון את רשימת הקבצים. נסו שוב בעוד רגע.');
+      toast.error('לא הצלחנו לטעון את רשימת הקבצים. נסו שוב בעוד רגע.');
     } finally { setBLoading(false); }
   }, []);
+
+  const handleDownloadUnauthorized = useCallback(() => {
+    logout();
+    navigate('/login', { replace: true });
+  }, [logout, navigate]);
 
   useEffect(() => { loadReports(); }, [loadReports]);
   useEffect(() => { loadBatches(page); }, [loadBatches, page]);
@@ -187,7 +199,11 @@ export default function Dashboard() {
           <button className="btn btn-ghost btn-sm" onClick={() => loadBatches(page)}>↻</button>
         </div>
 
-        {bLoading ? <div className="loading-full"><div className="spinner" /></div> : (
+        {bLoading ? <div className="loading-full"><div className="spinner" /></div> : batchesError ? (
+          <div className="alert alert-error" style={{ margin: 0 }}>
+            {batchesError}
+          </div>
+        ) : (
           <>
             {/* Desktop table */}
             {!mobile ? (
@@ -210,8 +226,8 @@ export default function Dashboard() {
                         <td>
                           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                             <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/batches/${b._id}`)}>צפה</button>
-                            <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'csv')}>CSV</button>
-                            <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'xlsx')}>XLSX</button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'csv', { onUnauthorized: handleDownloadUnauthorized })}>CSV</button>
+                            <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'xlsx', { onUnauthorized: handleDownloadUnauthorized })}>XLSX</button>
                             <button className="btn btn-ghost btn-sm" disabled={actionLoading === b._id+'-recat'} onClick={() => handleRecategorize(b._id)}>
                               {actionLoading === b._id+'-recat' ? <span className="spinner" style={{ width: 12, height: 12 }} /> : '↺'}
                             </button>
@@ -248,8 +264,8 @@ export default function Dashboard() {
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>{formatDate(b.createdAt)}</div>
                     <div className="batch-card-actions">
                       <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/batches/${b._id}`)}>צפה</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'csv')}>CSV</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'xlsx')}>XLSX</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'csv', { onUnauthorized: handleDownloadUnauthorized })}>CSV</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'xlsx', { onUnauthorized: handleDownloadUnauthorized })}>XLSX</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => handleRecategorize(b._id)}>↺ קטלג</button>
                       <button className="btn btn-danger btn-sm" onClick={() => setConfirmModal({ open: true, batchId: b._id })}>🗑</button>
                     </div>
