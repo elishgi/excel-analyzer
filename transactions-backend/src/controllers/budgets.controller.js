@@ -17,3 +17,12 @@ export async function putBudget(req, res, next) {
     next(err);
   }
 }
+
+export async function patchBudgetCell(req, res, next) {
+  try {
+    const result = await budgetsService.patchBudgetCell(req.user.id, req.params.monthKey, req.body);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}

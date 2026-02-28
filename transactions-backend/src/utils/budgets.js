@@ -1,6 +1,7 @@
 import { AppError } from './AppError.js';
 
 export const MONTH_KEY_REGEX = /^\d{4}-\d{2}$/;
+export const BUDGET_GROUP_KEYS = ['fixedBills', 'variableExpenses', 'income', 'savings', 'loansCash', 'tithes'];
 
 export function validateMonthKey(monthKey) {
   if (!MONTH_KEY_REGEX.test(monthKey)) {
@@ -16,6 +17,26 @@ export function validateMonthKey(monthKey) {
 export function createDefaultBudget(monthKey) {
   return {
     monthKey,
+    notes: '',
+    targets: {
+      fixedBills: 0,
+      variableExpenses: 0,
+      income: 0,
+      savings: 0,
+      loansCash: 0,
+      tithes: 0,
+    },
+    manualActuals: {},
+    manualCells: [],
+    groupItems: {
+      fixedBillsItems: [],
+      variableItems: [],
+      loansCashItems: [],
+      tithesItems: [],
+      savingsItems: [],
+      incomeItems: [],
+    },
+    // backward compatibility
     incomeLines: [],
     groups: {
       fixedBills: [],
@@ -24,7 +45,6 @@ export function createDefaultBudget(monthKey) {
       tithes: [],
       savings: [],
     },
-    notes: '',
   };
 }
 
