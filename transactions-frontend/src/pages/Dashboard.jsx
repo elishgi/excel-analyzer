@@ -1,295 +1,297 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useMemo, useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
-import api from '../api/axios.js';
-import SummaryCards from '../components/SummaryCards.jsx';
-import SummaryChart from '../components/SummaryChart.jsx';
-import ConfirmModal from '../components/ConfirmModal.jsx';
-import { formatDate, formatAmount } from '../utils/date.js';
-import { downloadExport } from '../utils/download.js';
-import { useAuth } from '../auth/AuthContext.jsx';
+import { getBudget, putBudget } from '../api/budgets.js';
+import { getMonthlyDashboard } from '../api/dashboard.js';
 
-const STATUS_BADGE = {
-  done:       <span className="badge badge-green">הושלם</span>,
-  processing: <span className="badge badge-yellow">מעבד...</span>,
-  failed:     <span className="badge badge-red">נכשל</span>,
+const GROUP_META = {
+  fixedBills: { label: 'חשבונות ומנויים', withDay: true },
+  variableExpenses: { label: 'הוצאות משתנות', withDay: false },
+  loansCash: { label: 'הלוואות/מזומן', withDay: false },
+  tithes: { label: 'מעשרות', withDay: true },
+  savings: { label: 'תוכנית חסכון', withDay: false },
+  incomeLines: { label: 'הכנסות', withDay: false },
 };
 
-// Detect mobile once
-const isMobile = () => window.innerWidth <= 640;
+const BREAKDOWN_ORDER = ['fixedBills', 'variableExpenses', 'loansCash', 'tithes', 'savings', 'incomeLines'];
+
+function monthNow() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  return `${now.getFullYear()}-${month}`;
+}
+
+function currency(amount) {
+  return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 2 }).format(amount || 0);
+}
+
+function buildEmptyBudget(monthKey) {
+  return {
+    monthKey,
+    incomeLines: [],
+    groups: { fixedBills: [], variableExpenses: [], loansCash: [], tithes: [], savings: [] },
+    notes: '',
+  };
+}
 
 export default function Dashboard() {
-  const navigate = useNavigate();
-  const { logout } = useAuth();
-  const [mobile, setMobile] = useState(isMobile());
+  const [monthKey, setMonthKey] = useState(monthNow);
+  const [dashboard, setDashboard] = useState(null);
+  const [budgetDraft, setBudgetDraft] = useState(buildEmptyBudget(monthNow()));
+  const [activeTab, setActiveTab] = useState('fixedBills');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [openEditor, setOpenEditor] = useState(false);
 
-  const [summary,    setSummary]    = useState([]);
-  const [merchants,  setMerchants]  = useState([]);
-  const [batches,    setBatches]    = useState([]);
-  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
-  const [page,       setPage]       = useState(1);
-  const [totals,     setTotals]     = useState({ total: 0, txCount: 0, uncategorizedCount: 0 });
-  const [loading,       setLoading]       = useState(true);
-  const [bLoading,      setBLoading]      = useState(false);
-  const [batchesError,  setBatchesError]  = useState('');
-  const [actionLoading, setActionLoading] = useState('');
-  const [confirmModal,  setConfirmModal]  = useState({ open: false, batchId: null });
-  const [from, setFrom] = useState('');
-  const [to,   setTo]   = useState('');
-
-  useEffect(() => {
-    const handler = () => setMobile(isMobile());
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, []);
-
-  const loadReports = useCallback(async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
+    setError('');
+
     try {
-      const params = { groupBy: 'category', includeUncategorized: 'false' };
-      if (from) params.from = from;
-      if (to)   params.to   = to;
-      const [sumRes, merRes, uncatRes] = await Promise.all([
-        api.get('/api/reports/summary', { params }),
-        api.get('/api/reports/top-merchants', { params: { limit: 8, ...params } }),
-        api.get('/api/transactions/uncategorized', { params: { limit: 1 } }),
+      const [dashRes, budgetRes] = await Promise.all([
+        getMonthlyDashboard(monthKey),
+        getBudget(monthKey),
       ]);
-      setSummary(sumRes.data.data || []);
-      setMerchants(merRes.data.data || []);
-      const total   = (sumRes.data.data || []).reduce((s, r) => s + r.totalAmount, 0);
-      const txCount = (sumRes.data.data || []).reduce((s, r) => s + r.txCount, 0);
-      setTotals({ total, txCount, uncategorizedCount: uncatRes.data.pagination?.total ?? 0 });
-    } catch { toast.error('שגיאה בטעינת הדוחות'); }
-    finally { setLoading(false); }
-  }, [from, to]);
+      setDashboard(dashRes);
+      setBudgetDraft({
+        monthKey,
+        incomeLines: budgetRes.incomeLines || [],
+        groups: {
+          fixedBills: budgetRes.groups?.fixedBills || [],
+          variableExpenses: budgetRes.groups?.variableExpenses || [],
+          loansCash: budgetRes.groups?.loansCash || [],
+          tithes: budgetRes.groups?.tithes || [],
+          savings: budgetRes.groups?.savings || [],
+        },
+        notes: budgetRes.notes || '',
+      });
+    } catch (err) {
+      setError(err.response?.data?.message || 'שגיאה בטעינת הדשבורד');
+    } finally {
+      setLoading(false);
+    }
+  }, [monthKey]);
 
-  const loadBatches = useCallback(async (p = 1) => {
-    setBLoading(true);
-    setBatchesError('');
-    try {
-      const { data } = await api.get('/api/imports', { params: { page: p, limit: 10 } });
-      setBatches(data.data || []);
-      setPagination(data.pagination);
-    } catch {
-      setBatchesError('לא הצלחנו לטעון את רשימת הקבצים. נסו שוב בעוד רגע.');
-      toast.error('לא הצלחנו לטעון את רשימת הקבצים. נסו שוב בעוד רגע.');
-    } finally { setBLoading(false); }
-  }, []);
+  useEffect(() => { loadData(); }, [loadData]);
 
-  const handleDownloadUnauthorized = useCallback(() => {
-    logout();
-    navigate('/login', { replace: true });
-  }, [logout, navigate]);
+  const emptyMonth = useMemo(
+    () => dashboard?.charts?.spendByDay?.length === 0,
+    [dashboard]
+  );
 
-  useEffect(() => { loadReports(); }, [loadReports]);
-  useEffect(() => { loadBatches(page); }, [loadBatches, page]);
-
-  const handleDelete = async () => {
-    const id = confirmModal.batchId;
-    setConfirmModal({ open: false, batchId: null });
-    setActionLoading(id + '-del');
-    try {
-      await api.delete(`/api/imports/${id}`);
-      toast.success('הבאץ׳ נמחק בהצלחה');
-      loadBatches(page); loadReports();
-    } catch (e) { toast.error(e.response?.data?.message || 'שגיאה במחיקה'); }
-    finally { setActionLoading(''); }
+  const updateLine = (groupKey, index, field, value) => {
+    setBudgetDraft((prev) => {
+      const next = structuredClone(prev);
+      const targetArray = groupKey === 'incomeLines' ? next.incomeLines : next.groups[groupKey];
+      targetArray[index][field] = field === 'targetAmount' || field === 'dayInMonth'
+        ? (value === '' ? '' : Number(value))
+        : value;
+      return next;
+    });
   };
 
-  const handleRecategorize = async (id) => {
-    setActionLoading(id + '-recat');
-    const tid = toast.loading('מקטלג מחדש...');
-    try {
-      const { data } = await api.post(`/api/imports/${id}/recategorize?force=true`);
-      toast.success(`עודכנו ${data.updatedCount} • נשארו לא מסווג: ${data.uncategorizedCount}`, { id: tid });
-      loadReports();
-    } catch (e) { toast.error(e.response?.data?.message || 'שגיאה', { id: tid }); }
-    finally { setActionLoading(''); }
+  const addLine = (groupKey) => {
+    setBudgetDraft((prev) => {
+      const next = structuredClone(prev);
+      const arr = groupKey === 'incomeLines' ? next.incomeLines : next.groups[groupKey];
+      arr.push({ name: '', targetAmount: 0, ...(GROUP_META[groupKey].withDay ? { dayInMonth: '' } : {}) });
+      return next;
+    });
   };
+
+  const deleteLine = (groupKey, index) => {
+    setBudgetDraft((prev) => {
+      const next = structuredClone(prev);
+      const arr = groupKey === 'incomeLines' ? next.incomeLines : next.groups[groupKey];
+      arr.splice(index, 1);
+      return next;
+    });
+  };
+
+  const normalizeForSave = () => ({
+    incomeLines: budgetDraft.incomeLines
+      .filter((l) => l.name?.trim())
+      .map((l) => ({ name: l.name.trim(), targetAmount: Number(l.targetAmount) || 0 })),
+    groups: {
+      fixedBills: budgetDraft.groups.fixedBills
+        .filter((l) => l.name?.trim())
+        .map((l) => ({ name: l.name.trim(), targetAmount: Number(l.targetAmount) || 0, ...(l.dayInMonth ? { dayInMonth: Number(l.dayInMonth) } : {}) })),
+      variableExpenses: budgetDraft.groups.variableExpenses
+        .filter((l) => l.name?.trim())
+        .map((l) => ({ name: l.name.trim(), targetAmount: Number(l.targetAmount) || 0 })),
+      loansCash: budgetDraft.groups.loansCash
+        .filter((l) => l.name?.trim())
+        .map((l) => ({ name: l.name.trim(), targetAmount: Number(l.targetAmount) || 0 })),
+      tithes: budgetDraft.groups.tithes
+        .filter((l) => l.name?.trim())
+        .map((l) => ({ name: l.name.trim(), targetAmount: Number(l.targetAmount) || 0, ...(l.dayInMonth ? { dayInMonth: Number(l.dayInMonth) } : {}) })),
+      savings: budgetDraft.groups.savings
+        .filter((l) => l.name?.trim())
+        .map((l) => ({ name: l.name.trim(), targetAmount: Number(l.targetAmount) || 0 })),
+    },
+    notes: budgetDraft.notes || '',
+  });
+
+  const onSaveBudget = async () => {
+    setSaving(true);
+    try {
+      await putBudget(monthKey, normalizeForSave());
+      toast.success('התכנון נשמר בהצלחה');
+      setOpenEditor(false);
+      await loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'שמירת התכנון נכשלה');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="loading-full"><span className="spinner" /> טוען דשבורד...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="page">
+        <div className="alert alert-error">{error}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
-      <ConfirmModal
-        open={confirmModal.open}
-        title="מחיקת batch"
-        message="פעולה זו תמחק את הבאץ׳ וכל העסקאות שלו לצמיתות."
-        confirmLabel="מחק"
-        onConfirm={handleDelete}
-        onCancel={() => setConfirmModal({ open: false, batchId: null })}
-      />
-
-      {/* Header */}
       <div className="page-header">
-        <h1>דשבורד</h1>
-        <button className="btn btn-primary" onClick={() => navigate('/upload')}>⬆ העלאה</button>
-      </div>
-
-      {/* Date filter */}
-      <div className="card" style={{ marginBottom: 20, padding: '12px 16px' }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--mono)', fontSize: '0.72rem', color: 'var(--text-3)', textTransform: 'uppercase', flexShrink: 0 }}>טווח:</span>
-          <input type="date" className="input" style={{ maxWidth: 150, minWidth: 120 }} value={from} onChange={(e) => setFrom(e.target.value)} />
-          <span style={{ color: 'var(--text-3)', flexShrink: 0 }}>—</span>
-          <input type="date" className="input" style={{ maxWidth: 150, minWidth: 120 }} value={to}   onChange={(e) => setTo(e.target.value)} />
-          <button className="btn btn-ghost btn-sm" onClick={loadReports} style={{ flexShrink: 0 }}>רענן</button>
-          {(from || to) && <button className="btn btn-ghost btn-sm" onClick={() => { setFrom(''); setTo(''); }} style={{ flexShrink: 0 }}>× נקה</button>}
+        <h1>דשבורד חודשי</h1>
+        <div className="flex gap-8 flex-wrap" style={{ alignItems: 'center' }}>
+          <input type="month" className="input" style={{ maxWidth: 170 }} value={monthKey} onChange={(e) => setMonthKey(e.target.value)} />
+          <button className="btn btn-primary" onClick={() => setOpenEditor(true)}>עריכת תכנון חודש</button>
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <SummaryCards {...totals} loading={loading} />
-
-      {/* Chart */}
-      <SummaryChart data={summary} />
-
-      {/* Reports grid */}
-      <div className="grid-2 stack-mobile" style={{ marginBottom: 24 }}>
-        {/* Categories */}
+      <div className="grid-3 mb-16">
+        <div className="card"><div className="section-title">מתוכנן להוצאה</div><h2>{currency(dashboard.kpis.plannedExpenseTotal)}</h2></div>
+        <div className="card"><div className="section-title">בוצע</div><h2>{currency(dashboard.kpis.actualExpenseTotal)}</h2></div>
         <div className="card">
-          <div className="section-title">פירוט קטגוריות</div>
-          {loading ? <div className="loading-full" style={{ minHeight: 120 }}><div className="spinner" /></div> : (
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>קטגוריה</th><th>סכום</th><th>עסקאות</th></tr></thead>
-                <tbody>
-                  {summary.map((r) => (
-                    <tr key={r.category}>
-                      <td><span className="badge badge-gray">{r.category}</span></td>
-                      <td className="mono" style={{ whiteSpace: 'nowrap' }}>{formatAmount(r.totalAmount)}</td>
-                      <td className="mono" style={{ color: 'var(--text-3)' }}>{r.txCount}</td>
-                    </tr>
-                  ))}
-                  {!summary.length && <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 20 }}>אין נתונים</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* Top merchants */}
-        <div className="card">
-          <div className="section-title">בתי עסק מובילים</div>
-          {loading ? <div className="loading-full" style={{ minHeight: 120 }}><div className="spinner" /></div> : (
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>שם עסק</th><th>סכום</th><th>#</th></tr></thead>
-                <tbody>
-                  {merchants.map((m, i) => (
-                    <tr key={m.businessName}>
-                      <td className="truncate" style={{ maxWidth: 160 }}>
-                        <span className="mono" style={{ color: 'var(--text-3)', fontSize: '0.72rem', marginLeft: 6 }}>#{i+1}</span>
-                        {m.businessName}
-                      </td>
-                      <td className="mono" style={{ whiteSpace: 'nowrap' }}>{formatAmount(m.totalAmount)}</td>
-                      <td className="mono" style={{ color: 'var(--text-3)' }}>{m.txCount}</td>
-                    </tr>
-                  ))}
-                  {!merchants.length && <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 20 }}>אין נתונים</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <div className="section-title">נותר</div>
+          <h2>{currency(dashboard.kpis.remainingToSpend)}</h2>
+          <span className={`badge ${dashboard.kpis.isWithinBudget ? 'badge-green' : 'badge-red'}`}>
+            {dashboard.kpis.isWithinBudget ? '✅ בתקציב' : '❌ חריגה'}
+          </span>
         </div>
       </div>
 
-      {/* Batches */}
+      {emptyMonth && <div className="alert alert-info">אין עסקאות בחודש הנבחר.</div>}
+
+      <div className="card mb-16">
+        <div className="section-title">Planned vs Actual</div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>קטגוריה</th><th>יעד</th><th>תוצאה</th><th>פער</th></tr></thead>
+            <tbody>
+              {dashboard.overviewTable.map((row) => (
+                <tr key={row.key}>
+                  <td>{row.label}</td>
+                  <td className="mono">{currency(row.target)}</td>
+                  <td className="mono">{currency(row.actual)}</td>
+                  <td className="mono" style={{ color: row.diff > 0 ? 'var(--red)' : 'var(--accent)' }}>{currency(row.diff)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card mb-16">
+        <div className="section-title">חלוקת הוצאות בפועל לפי קבוצות</div>
+        <div className="grid-2">
+          {dashboard.charts.expenseSplitByGroup.map((item) => (
+            <div key={item.key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className="flex" style={{ justifyContent: 'space-between' }}>
+                <span>{item.label}</span>
+                <span className="mono">{currency(item.value)}</span>
+              </div>
+              <div style={{ width: '100%', height: 10, borderRadius: 6, background: 'var(--bg-3)', border: '1px solid var(--border)' }}>
+                <div style={{ width: `${Math.min(100, dashboard.kpis.actualExpenseTotal ? (item.value / dashboard.kpis.actualExpenseTotal) * 100 : 0)}%`, height: '100%', background: 'var(--accent)', borderRadius: 6 }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 8 }}>
-          <div className="section-title" style={{ margin: 0 }}>קבצים שהועלו</div>
-          <button className="btn btn-ghost btn-sm" onClick={() => loadBatches(page)}>↻</button>
+        <div className="section-title">פירוט קבוצות</div>
+        <div className="flex gap-8 flex-wrap mb-16">
+          {BREAKDOWN_ORDER.map((key) => (
+            <button key={key} className={`btn btn-sm ${activeTab === key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setActiveTab(key)}>
+              {GROUP_META[key].label}
+            </button>
+          ))}
         </div>
 
-        {bLoading ? <div className="loading-full"><div className="spinner" /></div> : batchesError ? (
-          <div className="alert alert-error" style={{ margin: 0 }}>
-            {batchesError}
-          </div>
-        ) : (
-          <>
-            {/* Desktop table */}
-            {!mobile ? (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr><th>קובץ</th><th>סוג</th><th>תאריך</th><th>סטטוס</th><th>פעולות</th></tr>
-                  </thead>
-                  <tbody>
-                    {batches.map((b) => (
-                      <tr key={b._id}>
-                        <td style={{ maxWidth: 180 }} className="truncate">
-                          <button onClick={() => navigate(`/batches/${b._id}`)} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)', fontSize: '0.82rem', padding: 0 }}>
-                            {b.originalFileName}
-                          </button>
-                        </td>
-                        <td><span className="badge badge-gray mono">{b.sourceType.toUpperCase()}</span></td>
-                        <td className="mono" style={{ color: 'var(--text-3)', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>{formatDate(b.createdAt)}</td>
-                        <td>{STATUS_BADGE[b.status] || b.status}</td>
-                        <td>
-                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                            <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/batches/${b._id}`)}>צפה</button>
-                            <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'csv', { onUnauthorized: handleDownloadUnauthorized })}>CSV</button>
-                            <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'xlsx', { onUnauthorized: handleDownloadUnauthorized })}>XLSX</button>
-                            <button className="btn btn-ghost btn-sm" disabled={actionLoading === b._id+'-recat'} onClick={() => handleRecategorize(b._id)}>
-                              {actionLoading === b._id+'-recat' ? <span className="spinner" style={{ width: 12, height: 12 }} /> : '↺'}
-                            </button>
-                            <button className="btn btn-danger btn-sm" disabled={actionLoading === b._id+'-del'} onClick={() => setConfirmModal({ open: true, batchId: b._id })}>
-                              {actionLoading === b._id+'-del' ? <span className="spinner" style={{ width: 12, height: 12 }} /> : '🗑'}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {!batches.length && (
-                      <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-3)', padding: 28 }}>
-                        עדיין לא הועלו קבצים —{' '}
-                        <button onClick={() => navigate('/upload')} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)' }}>העלה עכשיו</button>
-                      </td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              /* Mobile cards */
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {batches.map((b) => (
-                  <div key={b._id} className="batch-card">
-                    <div className="batch-card-row">
-                      <button onClick={() => navigate(`/batches/${b._id}`)} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)', fontSize: '0.82rem', padding: 0, textAlign: 'right', flex: 1 }} className="truncate">
-                        {b.originalFileName}
-                      </button>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
-                        <span className="badge badge-gray mono">{b.sourceType.toUpperCase()}</span>
-                        {STATUS_BADGE[b.status]}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>{formatDate(b.createdAt)}</div>
-                    <div className="batch-card-actions">
-                      <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/batches/${b._id}`)}>צפה</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'csv', { onUnauthorized: handleDownloadUnauthorized })}>CSV</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => downloadExport(b._id, 'xlsx', { onUnauthorized: handleDownloadUnauthorized })}>XLSX</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => handleRecategorize(b._id)}>↺ קטלג</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => setConfirmModal({ open: true, batchId: b._id })}>🗑</button>
-                    </div>
-                  </div>
-                ))}
-                {!batches.length && (
-                  <div style={{ textAlign: 'center', color: 'var(--text-3)', padding: 28, fontFamily: 'var(--mono)' }}>
-                    אין קבצים —{' '}
-                    <button onClick={() => navigate('/upload')} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontFamily: 'var(--mono)' }}>העלה עכשיו</button>
-                  </div>
-                )}
-              </div>
-            )}
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>שם</th><th>יום</th><th>יעד</th><th>תוצאה</th><th>פער</th></tr></thead>
+            <tbody>
+              {(dashboard.groupsBreakdown[activeTab] || []).map((row, idx) => (
+                <tr key={`${row.name}-${idx}`}>
+                  <td>{row.name}</td>
+                  <td className="mono">{row.dayInMonth ?? '-'}</td>
+                  <td className="mono">{currency(row.target)}</td>
+                  <td className="mono">{currency(row.actual)}</td>
+                  <td className="mono" style={{ color: row.diff > 0 ? 'var(--red)' : 'var(--accent)' }}>{currency(row.diff)}</td>
+                </tr>
+              ))}
+              {(dashboard.groupsBreakdown[activeTab] || []).length === 0 && (
+                <tr><td colSpan={5} className="text-muted" style={{ textAlign: 'center' }}>אין שורות בקבוצה זו</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
 
-            {pagination.pages > 1 && (
-              <div className="pagination">
-                <button className="btn btn-ghost btn-sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>‹ הקודם</button>
-                <span>{page} / {pagination.pages}</span>
-                <button className="btn btn-ghost btn-sm" disabled={page >= pagination.pages} onClick={() => setPage(p => p + 1)}>הבא ›</button>
-              </div>
-            )}
-          </>
-        )}
+        <div className="mt-16 mono text-muted">
+          לא שויך: {currency(dashboard.groupsBreakdown.unassignedByGroup?.[activeTab === 'incomeLines' ? 'income' : activeTab] || 0)}
+        </div>
       </div>
+
+      {openEditor && (
+        <div className="modal-overlay" onClick={() => !saving && setOpenEditor(false)}>
+          <div className="modal-content" style={{ width: 'min(1000px, 95vw)', maxHeight: '88vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header"><h3>עריכת תכנון לחודש {monthKey}</h3></div>
+
+            {BREAKDOWN_ORDER.map((key) => {
+              const rows = key === 'incomeLines' ? budgetDraft.incomeLines : budgetDraft.groups[key];
+              return (
+                <div key={key} className="card" style={{ marginBottom: 12, padding: '12px 14px' }}>
+                  <div className="flex" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <strong>{GROUP_META[key].label}</strong>
+                    <button className="btn btn-ghost btn-sm" onClick={() => addLine(key)}>+ הוספת שורה</button>
+                  </div>
+                  {rows.map((line, index) => (
+                    <div key={`${key}-${index}`} className="grid-4" style={{ marginBottom: 8 }}>
+                      <input className="input" placeholder="שם" value={line.name || ''} onChange={(e) => updateLine(key, index, 'name', e.target.value)} />
+                      {GROUP_META[key].withDay ? (
+                        <input className="input" type="number" placeholder="יום בחודש" min={1} max={31} value={line.dayInMonth ?? ''} onChange={(e) => updateLine(key, index, 'dayInMonth', e.target.value)} />
+                      ) : <input className="input" disabled value="-" />}
+                      <input className="input" type="number" min={0} step="0.01" placeholder="יעד" value={line.targetAmount ?? 0} onChange={(e) => updateLine(key, index, 'targetAmount', e.target.value)} />
+                      <button className="btn btn-danger" onClick={() => deleteLine(key, index)}>מחיקה</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+
+            <div className="form-group">
+              <label>הערות</label>
+              <textarea className="input" rows={4} value={budgetDraft.notes} onChange={(e) => setBudgetDraft((prev) => ({ ...prev, notes: e.target.value }))} />
+            </div>
+
+            <div className="modal-actions">
+              <button className="btn btn-ghost" disabled={saving} onClick={() => setOpenEditor(false)}>ביטול</button>
+              <button className="btn btn-primary" disabled={saving} onClick={onSaveBudget}>{saving ? 'שומר...' : 'שמירה'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
