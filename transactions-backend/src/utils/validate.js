@@ -2,6 +2,11 @@ import { AppError } from './AppError.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MATCH_TYPES = ['exact', 'contains', 'regex'];
+export const MAX_REGEX_PATTERN_LENGTH = 120;
+
+function isSuspiciousRegexPattern(pattern) {
+  return /(\([^)]*[+*][^)]*\)[+*{])|(\+\+)|(\*\*)|(\{\d+,\}\{\d+,\})/.test(pattern);
+}
 
 /**
  * Validates signup body.
@@ -62,10 +67,19 @@ export function validateDictionaryRule(body, { isUpdate = false } = {}) {
     if (!pattern || typeof pattern !== 'string' || pattern.trim().length === 0) {
       details.push('pattern is required and must be a non-empty string');
     }
-    // Extra: validate regex patterns are actually valid
     if (matchType === 'regex' && pattern) {
+      const trimmedPattern = pattern.trim();
+
+      if (trimmedPattern.length > MAX_REGEX_PATTERN_LENGTH) {
+        details.push(`regex pattern is too long (max ${MAX_REGEX_PATTERN_LENGTH} characters)`);
+      }
+
+      if (isSuspiciousRegexPattern(trimmedPattern)) {
+        details.push('regex pattern is suspicious and may cause performance issues');
+      }
+
       try {
-        new RegExp(pattern);
+        new RegExp(trimmedPattern);
       } catch {
         details.push('pattern is not a valid regular expression');
       }
