@@ -3,16 +3,16 @@ import toast from 'react-hot-toast';
 import { getBudget, patchBudgetCell, putBudget } from '../api/budgets.js';
 import { getMonthlyDashboard } from '../api/dashboard.js';
 
-const GROUP_META = {
-  fixedBills: { label: 'חשבונות ומנויים', withDay: true },
-  variableExpenses: { label: 'הוצאות משתנות', withDay: false },
-  loansCash: { label: 'הלוואות/מזומן', withDay: false },
-  tithes: { label: 'מעשרות', withDay: true },
-  savings: { label: 'תוכנית חסכון', withDay: false },
-  income: { label: 'הכנסות', withDay: false },
+const GROUP_CONFIG = {
+  income: { label: 'הכנסות', itemKey: 'incomeItems', withDay: false, autoFilled: false, manualOnly: true },
+  fixedBills: { label: 'חשבונות ומנויים', itemKey: 'fixedBillsItems', withDay: true, autoFilled: true, manualOnly: false },
+  variableExpenses: { label: 'הוצאות משתנות', itemKey: 'variableItems', withDay: false, autoFilled: true, manualOnly: false },
+  tithes: { label: 'מעשרות', itemKey: 'tithesItems', withDay: true, autoFilled: true, manualOnly: false },
+  savings: { label: 'תכנית חסכון', itemKey: 'savingsItems', withDay: false, autoFilled: false, manualOnly: true },
+  loansCash: { label: 'הוצאות ידני', itemKey: 'loansCashItems', withDay: false, autoFilled: false, manualOnly: true },
 };
 
-const BREAKDOWN_ORDER = ['fixedBills', 'variableExpenses', 'loansCash', 'tithes', 'savings', 'income'];
+const BREAKDOWN_ORDER = ['income', 'fixedBills', 'variableExpenses', 'tithes', 'savings', 'loansCash'];
 
 function monthNow() {
   const now = new Date();
@@ -68,11 +68,9 @@ export default function Dashboard() {
   const [monthKey, setMonthKey] = useState(monthNow);
   const [dashboard, setDashboard] = useState(null);
   const [budgetDraft, setBudgetDraft] = useState(buildEmptyBudget(monthNow()));
-  const [activeTab, setActiveTab] = useState('fixedBills');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [openEditor, setOpenEditor] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -106,17 +104,53 @@ export default function Dashboard() {
     }
   };
 
-  const normalizeForSave = () => ({ ...budgetDraft });
+  const addRow = (groupKey) => {
+    const cfg = GROUP_CONFIG[groupKey];
+    const nextRow = { name: '', targetAmount: 0, manualActual: 0 };
+    if (cfg.withDay) nextRow.dayInMonth = '';
+    setBudgetDraft((prev) => ({
+      ...prev,
+      groupItems: {
+        ...prev.groupItems,
+        [cfg.itemKey]: [...(prev.groupItems?.[cfg.itemKey] || []), nextRow],
+      },
+    }));
+  };
+
+  const updateRow = (groupKey, idx, field, value) => {
+    const cfg = GROUP_CONFIG[groupKey];
+    setBudgetDraft((prev) => {
+      const rows = [...(prev.groupItems?.[cfg.itemKey] || [])];
+      rows[idx] = { ...rows[idx], [field]: value };
+      return {
+        ...prev,
+        groupItems: {
+          ...prev.groupItems,
+          [cfg.itemKey]: rows,
+        },
+      };
+    });
+  };
+
+  const removeRow = (groupKey, idx) => {
+    const cfg = GROUP_CONFIG[groupKey];
+    setBudgetDraft((prev) => ({
+      ...prev,
+      groupItems: {
+        ...prev.groupItems,
+        [cfg.itemKey]: (prev.groupItems?.[cfg.itemKey] || []).filter((_, rowIdx) => rowIdx !== idx),
+      },
+    }));
+  };
 
   const onSaveBudget = async () => {
     setSaving(true);
     try {
-      await putBudget(monthKey, normalizeForSave());
-      toast.success('התכנון נשמר בהצלחה');
-      setOpenEditor(false);
+      await putBudget(monthKey, { ...budgetDraft });
+      toast.success('הקוביות נשמרו בהצלחה');
       await loadData();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'שמירת התכנון נכשלה');
+      toast.error(err.response?.data?.message || 'שמירת הקוביות נכשלה');
     } finally {
       setSaving(false);
     }
@@ -136,7 +170,7 @@ export default function Dashboard() {
         <h1>דשבורד חודשי</h1>
         <div className="flex gap-8 flex-wrap" style={{ alignItems: 'center' }}>
           <input type="month" className="input" style={{ maxWidth: 170 }} value={monthKey} onChange={(e) => setMonthKey(e.target.value)} />
-          <button className="btn btn-primary" onClick={() => setOpenEditor(true)}>עריכת תכנון חודש</button>
+          <button className="btn btn-primary" onClick={onSaveBudget} disabled={saving}>{saving ? 'שומר...' : 'שמירת קוביות'}</button>
         </div>
       </div>
 
@@ -167,51 +201,82 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="section-title">פירוט קבוצות</div>
-        <div className="flex gap-8 flex-wrap mb-16">
-          {BREAKDOWN_ORDER.map((key) => (
-            <button key={key} className={`btn btn-sm ${activeTab === key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setActiveTab(key)}>
-              {GROUP_META[key].label}
-            </button>
-          ))}
-        </div>
+      <div className="cube-grid">
+        {BREAKDOWN_ORDER.map((groupKey) => {
+          const cfg = GROUP_CONFIG[groupKey];
+          const rows = budgetDraft.groupItems?.[cfg.itemKey] || [];
+          const autoRows = dashboard.groupsBreakdown[groupKey]?.items || [];
+          const autoTotal = dashboard.groupsBreakdown[groupKey]?.totals?.autoActual || 0;
 
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>שם</th><th>יום</th><th>יעד</th><th>תוצאה</th><th>מקור</th><th>פער</th></tr></thead>
-            <tbody>
-              {(dashboard.groupsBreakdown[activeTab]?.items || []).map((row, idx) => (
-                <tr key={`${row.name}-${idx}`}>
-                  <td>{row.name}</td>
-                  <td className="mono">{row.dayInMonth ?? '-'}</td>
-                  <td className="mono"><EditableNumber value={row.target} path={`groups.${activeTab}.items[${idx}].target`} onSave={saveCell} /></td>
-                  <td className="mono"><EditableNumber value={row.finalActual} path={`groups.${activeTab}.items[${idx}].actual`} onSave={saveCell} /></td>
-                  <td>{sourceBadge(row.manualActual !== null && row.manualActual !== undefined ? 'manual' : (row.autoActual ? 'auto' : 'none'))}</td>
-                  <td className="mono" style={{ color: row.diff > 0 ? 'var(--red)' : 'var(--accent)' }}>{currency(row.diff)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+          return (
+            <div className="card cube-card" key={groupKey}>
+              <div className="flex" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <h3>{cfg.label}</h3>
+                <button className="btn btn-ghost btn-sm" onClick={() => addRow(groupKey)}>+ שורה</button>
+              </div>
 
-        <div className="mt-16 mono text-muted">
-          לא שויך אוטומטית: {currency(dashboard.groupsBreakdown[activeTab]?.unassigned?.autoActual || 0)}
-        </div>
-      </div>
+              {cfg.autoFilled && (
+                <div className="alert alert-info" style={{ marginBottom: 10 }}>
+                  אוטומטי מסריקת אקסל: {currency(autoTotal)}
+                </div>
+              )}
 
-      {openEditor && (
-        <div className="modal-overlay" onClick={() => !saving && setOpenEditor(false)}>
-          <div className="modal-content" style={{ width: 'min(680px, 95vw)', maxHeight: '88vh', overflow: 'auto' }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header"><h3>עריכת תכנון לחודש {monthKey}</h3></div>
-            <div className="form-group"><label>הערות</label><textarea className="input" rows={4} value={budgetDraft.notes} onChange={(e) => setBudgetDraft((prev) => ({ ...prev, notes: e.target.value }))} /></div>
-            <div className="modal-actions">
-              <button className="btn btn-ghost" disabled={saving} onClick={() => setOpenEditor(false)}>ביטול</button>
-              <button className="btn btn-primary" disabled={saving} onClick={onSaveBudget}>{saving ? 'שומר...' : 'שמירה'}</button>
+              <div className="cube-rows">
+                {rows.map((row, idx) => {
+                  const autoRow = autoRows[idx];
+                  return (
+                    <div key={`${groupKey}-${idx}`} className="cube-row">
+                      <input
+                        className="input"
+                        placeholder="שם"
+                        value={row.name || ''}
+                        onChange={(e) => updateRow(groupKey, idx, 'name', e.target.value)}
+                      />
+                      {cfg.withDay && (
+                        <input
+                          className="input"
+                          type="number"
+                          min={1}
+                          max={31}
+                          placeholder="תאריך"
+                          value={row.dayInMonth ?? ''}
+                          onChange={(e) => updateRow(groupKey, idx, 'dayInMonth', e.target.value)}
+                        />
+                      )}
+                      <input
+                        className="input"
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        placeholder="יעד"
+                        value={row.targetAmount ?? 0}
+                        onChange={(e) => updateRow(groupKey, idx, 'targetAmount', Number(e.target.value))}
+                      />
+                      <input
+                        className="input"
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        placeholder="תוצאה"
+                        value={row.manualActual ?? 0}
+                        onChange={(e) => updateRow(groupKey, idx, 'manualActual', Number(e.target.value))}
+                      />
+                      <button className="btn btn-danger btn-icon" onClick={() => removeRow(groupKey, idx)}>✕</button>
+
+                      {cfg.autoFilled && (
+                        <div className="mono text-muted" style={{ gridColumn: '1 / -1', fontSize: '0.78rem' }}>
+                          זוהה אוטומטית: {currency(autoRow?.autoActual || 0)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {!rows.length && <div className="text-muted">אין שורות עדיין. הוסף שורה חדשה.</div>}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          );
+        })}
+      </div>
     </div>
   );
 }
