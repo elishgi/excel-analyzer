@@ -276,3 +276,37 @@ tbody tr:last-child td { border-bottom: none; }
   display: flex; flex-direction: column; gap: 10px;
 }
 .uncat-row-mobile:last-child { border-bottom: none; }
+
+/* ── Dashboard cubes ───────────────────────────────────────────────────────── */
+.cube-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.cube-card {
+  padding: 14px;
+}
+
+.cube-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cube-row {
+  display: grid;
+  grid-template-columns: 1.2fr repeat(2, minmax(72px, 0.8fr)) minmax(72px, 0.8fr) 34px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-3);
+}
+
+@media (max-width: 900px) {
+  .cube-row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
