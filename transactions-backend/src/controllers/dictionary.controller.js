@@ -15,8 +15,8 @@ export async function addRule(req, res, next) {
     const body = req.body ?? {};
     validateDictionaryRule(body);
 
-    const { matchType, pattern, category, priority } = body;
-    const rule = await dictionaryService.addRule(req.user.id, { matchType, pattern: pattern.trim(), category: category.trim(), priority });
+    const { matchType, pattern, categoryId, priority, conditions } = body;
+    const rule = await dictionaryService.addRule(req.user.id, { matchType, pattern: pattern.trim(), categoryId, priority, conditions });
     res.status(201).json(rule);
   } catch (err) {
     next(err);
@@ -28,12 +28,12 @@ export async function updateRule(req, res, next) {
     const body = req.body ?? {};
     validateDictionaryRule(body, { isUpdate: true });
 
-    // Whitelist updatable fields
     const allowed = {};
     if (body.matchType !== undefined) allowed.matchType = body.matchType;
     if (body.pattern !== undefined) allowed.pattern = body.pattern.trim();
-    if (body.category !== undefined) allowed.category = body.category.trim();
+    if (body.categoryId !== undefined) allowed.categoryId = body.categoryId;
     if (body.priority !== undefined) allowed.priority = body.priority;
+    if (body.conditions !== undefined) allowed.conditions = body.conditions;
 
     const rule = await dictionaryService.editRule(req.params.id, req.user.id, allowed);
     res.json(rule);

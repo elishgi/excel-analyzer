@@ -1,282 +1,112 @@
-import { useCallback, useMemo, useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { PieChart, Pie, Tooltip, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 import toast from 'react-hot-toast';
-import { getBudget, patchBudgetCell, putBudget } from '../api/budgets.js';
-import { getMonthlyDashboard } from '../api/dashboard.js';
+import { closeDashboardMonth, getMonthlyDashboard, patchDashboardCell } from '../api/dashboard.js';
 
-const GROUP_CONFIG = {
-  income: { label: 'הכנסות', itemKey: 'incomeItems', withDay: false, autoFilled: false, manualOnly: true },
-  fixedBills: { label: 'חשבונות ומנויים', itemKey: 'fixedBillsItems', withDay: true, autoFilled: true, manualOnly: false },
-  variableExpenses: { label: 'הוצאות משתנות', itemKey: 'variableItems', withDay: false, autoFilled: true, manualOnly: false },
-  tithes: { label: 'מעשרות', itemKey: 'tithesItems', withDay: true, autoFilled: true, manualOnly: false },
-  savings: { label: 'תכנית חסכון', itemKey: 'savingsItems', withDay: false, autoFilled: false, manualOnly: true },
-  loansCash: { label: 'הוצאות ידני', itemKey: 'loansCashItems', withDay: false, autoFilled: false, manualOnly: true },
-};
+const BOX_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'];
 
-const BREAKDOWN_ORDER = ['income', 'fixedBills', 'variableExpenses', 'tithes', 'savings', 'loansCash'];
-
-function monthNow() {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  return `${now.getFullYear()}-${month}`;
-}
-
-function currency(amount) {
-  return new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS', maximumFractionDigits: 2 }).format(amount || 0);
-}
-
-function sourceBadge(source) {
-  if (source === 'manual') return <span className="badge badge-yellow">M</span>;
-  if (source === 'auto') return <span className="badge badge-gray">A</span>;
-  return <span className="badge badge-gray">-</span>;
-}
-
-function buildEmptyBudget(monthKey) {
-  return {
-    monthKey,
-    notes: '',
-    targets: { fixedBills: 0, variableExpenses: 0, income: 0, savings: 0, loansCash: 0, tithes: 0 },
-    groupItems: { fixedBillsItems: [], variableItems: [], loansCashItems: [], tithesItems: [], savingsItems: [], incomeItems: [] },
-    manualCells: [],
-  };
-}
-
-function EditableNumber({ value, path, onSave }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => { setDraft(value); }, [value]);
-
-  if (!editing) {
-    return (
-      <button className="btn btn-ghost btn-sm" style={{ padding: '2px 8px' }} onClick={() => setEditing(true)}>
-        {currency(value)}
-      </button>
-    );
-  }
-
-  return (
-    <div className="flex gap-6" style={{ alignItems: 'center' }}>
-      <input className="input" type="number" min={0} step="0.01" style={{ width: 120, padding: '4px 8px' }} value={draft ?? 0} onChange={(e) => setDraft(Number(e.target.value))} />
-      <button className="btn btn-primary btn-sm" onClick={async () => { await onSave(path, draft); setEditing(false); }}>שמור</button>
-      <button className="btn btn-ghost btn-sm" onClick={() => { setDraft(value); setEditing(false); }}>ביטול</button>
-      <button className="btn btn-danger btn-sm" onClick={async () => { await onSave(path, null); setEditing(false); }}>נקה</button>
-    </div>
-  );
-}
+const monthNow = () => new Date().toISOString().slice(0, 7);
+const money = (v) => new Intl.NumberFormat('he-IL', { style: 'currency', currency: 'ILS' }).format(v || 0);
 
 export default function Dashboard() {
-  const [monthKey, setMonthKey] = useState(monthNow);
-  const [dashboard, setDashboard] = useState(null);
-  const [budgetDraft, setBudgetDraft] = useState(buildEmptyBudget(monthNow()));
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [monthKey, setMonthKey] = useState(monthNow());
+  const [data, setData] = useState(null);
+  const [closeSummary, setCloseSummary] = useState(null);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const [dashRes, budgetRes] = await Promise.all([getMonthlyDashboard(monthKey), getBudget(monthKey)]);
-      setDashboard(dashRes);
-      setBudgetDraft({
-        monthKey,
-        notes: budgetRes.notes || '',
-        targets: budgetRes.targets || buildEmptyBudget(monthKey).targets,
-        groupItems: budgetRes.groupItems || buildEmptyBudget(monthKey).groupItems,
-        manualCells: budgetRes.manualCells || [],
-      });
-    } catch (err) {
-      setError(err.response?.data?.message || 'שגיאה בטעינת הדשבורד');
-    } finally {
-      setLoading(false);
-    }
-  }, [monthKey]);
+  const isCurrent = monthKey === monthNow();
+  const readOnly = !isCurrent || data?.locked;
 
-  useEffect(() => { loadData(); }, [loadData]);
+  const load = async () => setData(await getMonthlyDashboard(monthKey));
+  useEffect(() => { load(); }, [monthKey]);
 
-  const saveCell = async (path, value) => {
-    try {
-      await patchBudgetCell(monthKey, path, value);
-      await loadData();
-      toast.success('התא עודכן');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'עדכון התא נכשל');
-    }
+  const upsertManual = async (boxKey) => {
+    const name = window.prompt('שם שורה'); if (!name) return;
+    const target = Number(window.prompt('יעד', '0') || 0);
+    const actual = Number(window.prompt('תוצאה', '0') || 0);
+    const saveAsTemplate = window.confirm('לשמור לחודשים הבאים?');
+    await patchDashboardCell({ monthKey, type: 'manualRowAdd', boxKey, name, target, actual, saveAsTemplate });
+    await load();
   };
 
-  const addRow = (groupKey) => {
-    const cfg = GROUP_CONFIG[groupKey];
-    const nextRow = { name: '', targetAmount: 0, manualActual: 0 };
-    if (cfg.withDay) nextRow.dayInMonth = '';
-    setBudgetDraft((prev) => ({
-      ...prev,
-      groupItems: {
-        ...prev.groupItems,
-        [cfg.itemKey]: [...(prev.groupItems?.[cfg.itemKey] || []), nextRow],
-      },
-    }));
+  const exportOverlay = async (asPdf = false) => {
+    if (asPdf) { window.print(); return; }
+    const blob = new Blob([JSON.stringify(closeSummary, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `close-summary-${monthKey}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const updateRow = (groupKey, idx, field, value) => {
-    const cfg = GROUP_CONFIG[groupKey];
-    setBudgetDraft((prev) => {
-      const rows = [...(prev.groupItems?.[cfg.itemKey] || [])];
-      rows[idx] = { ...rows[idx], [field]: value };
-      return {
-        ...prev,
-        groupItems: {
-          ...prev.groupItems,
-          [cfg.itemKey]: rows,
-        },
-      };
-    });
-  };
-
-  const removeRow = (groupKey, idx) => {
-    const cfg = GROUP_CONFIG[groupKey];
-    setBudgetDraft((prev) => ({
-      ...prev,
-      groupItems: {
-        ...prev.groupItems,
-        [cfg.itemKey]: (prev.groupItems?.[cfg.itemKey] || []).filter((_, rowIdx) => rowIdx !== idx),
-      },
-    }));
-  };
-
-  const onSaveBudget = async () => {
-    setSaving(true);
-    try {
-      await putBudget(monthKey, { ...budgetDraft });
-      toast.success('הקוביות נשמרו בהצלחה');
-      await loadData();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'שמירת הקוביות נכשלה');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const emptyMonth = useMemo(
-    () => dashboard?.overviewTable?.every((row) => row.actual?.value === 0),
-    [dashboard]
-  );
-
-  if (loading) return <div className="loading-full"><span className="spinner" /> טוען דשבורד...</div>;
-  if (error) return <div className="page"><div className="alert alert-error">{error}</div></div>;
+  if (!data) return <div className="page">טוען...</div>;
 
   return (
     <div className="page">
-      <div className="page-header">
-        <h1>דשבורד חודשי</h1>
-        <div className="flex gap-8 flex-wrap" style={{ alignItems: 'center' }}>
-          <input type="month" className="input" style={{ maxWidth: 170 }} value={monthKey} onChange={(e) => setMonthKey(e.target.value)} />
-          <button className="btn btn-primary" onClick={onSaveBudget} disabled={saving}>{saving ? 'שומר...' : 'שמירת קוביות'}</button>
+      <div className="flex" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
+        <h1>סטטוס חשבון חודשי</h1>
+        <div className="flex gap-8">
+          <input className="input" type="month" value={monthKey} onChange={(e) => setMonthKey(e.target.value)} />
+          {isCurrent && !data.locked && <button className="btn btn-primary" onClick={async () => { const s = await closeDashboardMonth(monthKey); setCloseSummary(s); await load(); }}>סגירת חודש</button>}
         </div>
       </div>
 
-      <div className="grid-3 mb-16">
-        <div className="card"><div className="section-title">מתוכנן להוצאה</div><h2>{currency(dashboard.kpis.plannedExpenseTotal)}</h2></div>
-        <div className="card"><div className="section-title">בוצע</div><h2>{currency(dashboard.kpis.actualExpenseTotal)}</h2></div>
-        <div className="card"><div className="section-title">נותר</div><h2>{currency(dashboard.kpis.remainingToSpend)}</h2></div>
+      <div className="grid grid-3" style={{ marginBottom: 20 }}>
+        <div className="card">הכנסות בפועל: <b>{money(data.summary.incomeActual)}</b></div>
+        <div className="card">הוצאות בפועל: <b>{money(data.summary.expensesActual)}</b></div>
+        <div className="card">יתרה: <b>{money(data.summary.balance)}</b></div>
       </div>
 
-      {emptyMonth && <div className="alert alert-info">אין נתוני הוצאה/הכנסה לחודש הנבחר.</div>}
+      {readOnly && <div className="alert">מצב צפייה בלבד {data.locked ? '(חודש סגור)' : '(לא חודש נוכחי)'}</div>}
 
-      <div className="card mb-16">
-        <div className="section-title">Planned vs Actual</div>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>קטגוריה</th><th>יעד</th><th>תוצאה</th><th>פער</th></tr></thead>
+      {data.boxes.map((box) => (
+        <div className="card" key={box.boxKey} style={{ marginTop: 12 }}>
+          <div className="flex" style={{ justifyContent: 'space-between' }}><h3>{box.title}</h3>{!readOnly && <button className="btn btn-ghost" onClick={() => upsertManual(box.boxKey)}>+ הוספת שורה ידנית</button>}</div>
+          <table className="table">
+            <thead><tr><th>שם</th><th>יעד</th><th>תוצאה</th><th>פעולות</th></tr></thead>
             <tbody>
-              {dashboard.overviewTable.map((row) => (
-                <tr key={row.key}>
-                  <td>{row.label}</td>
-                  <td className="mono"><div className="flex gap-6" style={{ alignItems: 'center' }}><EditableNumber value={row.target.value} path={`overview.${row.key}.target`} onSave={saveCell} />{sourceBadge(row.target.source)}</div></td>
-                  <td className="mono"><div className="flex gap-6" style={{ alignItems: 'center' }}><EditableNumber value={row.actual.value} path={`overview.${row.key}.actual`} onSave={saveCell} />{sourceBadge(row.actual.source)}</div></td>
-                  <td className="mono" style={{ color: row.diff > 0 ? 'var(--red)' : 'var(--accent)' }}>{currency(row.diff)}</td>
-                </tr>
-              ))}
+              {box.autoRows.map((r) => <Row key={String(r.categoryId)} row={r} readOnly={readOnly} onSave={async (target) => { await patchDashboardCell({ monthKey, type: 'categoryTarget', categoryId: String(r.categoryId), target }); await load(); }} />)}
+              {box.manualRows.map((r) => <Row key={String(r.id)} row={r} readOnly={readOnly} manual onSave={async (target, actual, name) => { await patchDashboardCell({ monthKey, type: 'manualRowUpdate', boxKey: box.boxKey, rowId: String(r.id), target, actual, name }); await load(); }} onDelete={async () => { const removeTemplateFuture = window.confirm('למחוק גם לחודשים הבאים?'); await patchDashboardCell({ monthKey, type: 'manualRowDelete', boxKey: box.boxKey, rowId: String(r.id), removeTemplateFuture }); await load(); }} />)}
             </tbody>
+            <tfoot><tr><td>סה"כ</td><td>{money(box.totals.target)}</td><td>{money(box.totals.actual)}</td><td>{money(box.totals.diff)}</td></tr></tfoot>
           </table>
         </div>
+      ))}
+
+      <div className="grid grid-2" style={{ marginTop: 18 }}>
+        <div className="card" style={{ height: 280 }}><ResponsiveContainer><PieChart><Pie data={data.charts.pie} dataKey="value" nameKey="name">{data.charts.pie.map((_, i) => <Cell key={i} fill={BOX_COLORS[i % BOX_COLORS.length]} />)}</Pie><Tooltip /></PieChart></ResponsiveContainer></div>
+        <div className="card">נותר: <b>{money(data.charts.donut.remaining)}</b></div>
+      </div>
+      <div className="card" style={{ marginTop: 12, height: 300 }}>
+        <ResponsiveContainer><LineChart data={data.charts.line}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis /><Tooltip /><Legend /><Line dataKey="planned" stroke="#3b82f6" /><Line dataKey="actual" stroke="#ef4444" /></LineChart></ResponsiveContainer>
       </div>
 
-      <div className="cube-grid">
-        {BREAKDOWN_ORDER.map((groupKey) => {
-          const cfg = GROUP_CONFIG[groupKey];
-          const rows = budgetDraft.groupItems?.[cfg.itemKey] || [];
-          const autoRows = dashboard.groupsBreakdown[groupKey]?.items || [];
-          const autoTotal = dashboard.groupsBreakdown[groupKey]?.totals?.autoActual || 0;
-
-          return (
-            <div className="card cube-card" key={groupKey}>
-              <div className="flex" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <h3>{cfg.label}</h3>
-                <button className="btn btn-ghost btn-sm" onClick={() => addRow(groupKey)}>+ שורה</button>
-              </div>
-
-              {cfg.autoFilled && (
-                <div className="alert alert-info" style={{ marginBottom: 10 }}>
-                  אוטומטי מסריקת אקסל: {currency(autoTotal)}
-                </div>
-              )}
-
-              <div className="cube-rows">
-                {rows.map((row, idx) => {
-                  const autoRow = autoRows[idx];
-                  return (
-                    <div key={`${groupKey}-${idx}`} className="cube-row">
-                      <input
-                        className="input"
-                        placeholder="שם"
-                        value={row.name || ''}
-                        onChange={(e) => updateRow(groupKey, idx, 'name', e.target.value)}
-                      />
-                      {cfg.withDay && (
-                        <input
-                          className="input"
-                          type="number"
-                          min={1}
-                          max={31}
-                          placeholder="תאריך"
-                          value={row.dayInMonth ?? ''}
-                          onChange={(e) => updateRow(groupKey, idx, 'dayInMonth', e.target.value)}
-                        />
-                      )}
-                      <input
-                        className="input"
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        placeholder="יעד"
-                        value={row.targetAmount ?? 0}
-                        onChange={(e) => updateRow(groupKey, idx, 'targetAmount', Number(e.target.value))}
-                      />
-                      <input
-                        className="input"
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        placeholder="תוצאה"
-                        value={row.manualActual ?? 0}
-                        onChange={(e) => updateRow(groupKey, idx, 'manualActual', Number(e.target.value))}
-                      />
-                      <button className="btn btn-danger btn-icon" onClick={() => removeRow(groupKey, idx)}>✕</button>
-
-                      {cfg.autoFilled && (
-                        <div className="mono text-muted" style={{ gridColumn: '1 / -1', fontSize: '0.78rem' }}>
-                          זוהה אוטומטית: {currency(autoRow?.autoActual || 0)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {!rows.length && <div className="text-muted">אין שורות עדיין. הוסף שורה חדשה.</div>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {closeSummary && (
+        <div className="modal-backdrop" onClick={() => setCloseSummary(null)}>
+          <div id="close-summary-overlay" className="card" style={{ maxWidth: 640, margin: '10vh auto', background: '#111827' }} onClick={(e) => e.stopPropagation()}>
+            <h2>🎉 סיכום סגירת חודש</h2>
+            <p>הכנסות: {money(closeSummary.summary.incomeActual)}</p>
+            <p>הוצאות: {money(closeSummary.summary.expensesActual)}</p>
+            <p>יתרה: {money(closeSummary.summary.balance)}</p>
+            <p>עמידה ביעדים: {closeSummary.achievement.metRows}/{closeSummary.achievement.totalRows} ({closeSummary.achievement.percent}%)</p>
+            <p>קטגוריה כבדה: {closeSummary.heaviestCategory}</p>
+            <div className="flex gap-8"><button className="btn" onClick={() => exportOverlay(false)}>Download PNG</button><button className="btn" onClick={() => exportOverlay(true)}>Download PDF</button></div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function Row({ row, readOnly, manual = false, onSave, onDelete }) {
+  const [name, setName] = useState(row.name);
+  const [target, setTarget] = useState(row.target || 0);
+  const [actual, setActual] = useState(row.actual || 0);
+  useEffect(() => { setName(row.name); setTarget(row.target || 0); setActual(row.actual || 0); }, [row]);
+  return <tr>
+    <td>{manual && !readOnly ? <input className="input" value={name} onChange={(e) => setName(e.target.value)} /> : row.name}</td>
+    <td>{readOnly ? money(target) : <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} />}</td>
+    <td>{manual && !readOnly ? <input className="input" type="number" value={actual} onChange={(e) => setActual(Number(e.target.value))} /> : money(actual)}</td>
+    <td>{!readOnly && <><button className="btn btn-ghost" onClick={() => onSave(target, actual, name)}>שמור</button>{manual && <button className="btn btn-danger" onClick={onDelete}>מחק</button>}</>}</td>
+  </tr>;
 }

@@ -4,11 +4,12 @@ import { AppError } from '../utils/AppError.js';
 import * as importBatchDal from '../dal/importBatch.dal.js';
 import * as transactionDal from '../dal/transaction.dal.js';
 import * as ruleDal from '../dal/dictionaryRule.dal.js';
+import * as draftDal from '../dal/draftImport.dal.js';
+import * as categoryDal from '../dal/category.dal.js';
 import { MAX_REGEX_PATTERN_LENGTH } from '../utils/validate.js';
 
 const UNCATEGORIZED = 'לא מסווג';
 
-// ── Categorization helpers (shared) ──────────────────────────────────────────
 function isSuspiciousRegexPattern(pattern) {
   return /(\([^)]*[+*][^)]*\)[+*{])|(\+\+)|(\*\*)|(\{\d+,\}\{\d+,\})/.test(pattern);
 }
@@ -16,270 +17,166 @@ function isSuspiciousRegexPattern(pattern) {
 function prepareRulesForMatching(rules) {
   return rules.map((rule) => {
     if (rule.matchType !== 'regex') return rule;
-
     const pattern = String(rule.pattern ?? '').trim();
-
-    if (pattern.length > MAX_REGEX_PATTERN_LENGTH) {
-      throw new AppError(
-        `Regex pattern is too long for rule ${rule._id} (max ${MAX_REGEX_PATTERN_LENGTH} characters)`,
-        400
-      );
-    }
-
-    if (isSuspiciousRegexPattern(pattern)) {
-      throw new AppError(`Regex pattern is suspicious for rule ${rule._id}`, 400);
-    }
-
-    try {
-      rule._compiledRegex = new RegExp(pattern);
-    } catch {
-      throw new AppError(`Invalid regex pattern for rule ${rule._id}`, 400);
-    }
-
+    if (pattern.length > MAX_REGEX_PATTERN_LENGTH) throw new AppError('Regex pattern too long', 400);
+    if (isSuspiciousRegexPattern(pattern)) throw new AppError('Regex pattern suspicious', 400);
+    try { rule._compiledRegex = new RegExp(pattern); } catch { throw new AppError('Invalid regex pattern', 400); }
     return rule;
   });
 }
 
-function matchRule(businessName, rule) {
-  if (rule.matchType === 'exact')    return businessName === rule.pattern;
-  if (rule.matchType === 'contains') return businessName.includes(rule.pattern);
-  if (rule.matchType === 'regex')    return Boolean(rule._compiledRegex?.test(businessName));
-  return false;
+function matchRule(row, rule) {
+  const merchant = row.businessName;
+  const patternMatched = rule.matchType === 'exact'
+    ? merchant === rule.pattern
+    : rule.matchType === 'contains'
+      ? merchant.includes(rule.pattern)
+      : Boolean(rule._compiledRegex?.test(merchant));
+  if (!patternMatched) return false;
+  const cond = rule.conditions || {};
+  if (cond.sourceType && cond.sourceType !== row.sourceType) return false;
+  if (cond.last4 && cond.last4 !== row.cardLast4) return false;
+  if (cond.dateFrom && row.date < new Date(cond.dateFrom)) return false;
+  if (cond.dateTo && row.date > new Date(cond.dateTo)) return false;
+  return true;
 }
 
-export function categorize(businessName, rules) {
+export function categorize(row, rules) {
   for (const matchType of ['exact', 'contains', 'regex']) {
-    const hits = rules
-      .filter((r) => r.matchType === matchType && matchRule(businessName, r))
-      .sort((a, b) => b.priority - a.priority);
+    const hits = rules.filter((r) => r.matchType === matchType && matchRule(row, r)).sort((a, b) => b.priority - a.priority);
     if (hits.length) return hits[0];
   }
   return null;
 }
 
-// ── Pagination helper ─────────────────────────────────────────────────────────
 export function parsePagination(query, defaults = { page: 1, limit: 20 }) {
-  const page  = Math.max(1, parseInt(query.page)  || defaults.page);
+  const page = Math.max(1, parseInt(query.page) || defaults.page);
   const limit = Math.min(100, Math.max(1, parseInt(query.limit) || defaults.limit));
   return { page, limit, skip: (page - 1) * limit };
 }
 
-// ── Process import ────────────────────────────────────────────────────────────
 export async function processImport({ userId, buffer, originalFileName, sourceType }) {
-  const batch = await importBatchDal.createBatch({ userId, sourceType, originalFileName, status: 'processing' });
-
-  try {
-    const normalized = normalizeExcel(buffer, sourceType);
-    if (!normalized.length) throw new AppError('הקובץ לא מכיל עסקאות תקינות', 400);
-
-    const rules = prepareRulesForMatching(await ruleDal.getRulesByUser(userId));
-    let uncategorizedCount = 0;
-
-    const docs = normalized.map((tx) => {
-      const rule = categorize(tx.businessName, rules);
-      if (!rule) uncategorizedCount++;
-      return {
-        userId,
-        importBatchId: batch._id,
-        date: tx.date,
-        businessName: tx.businessName,
-        amount: tx.amount,
-        cardLast4: tx.cardLast4 ?? null,
-        rawDescription: tx.rawDescription ?? null,
-        category: rule ? rule.category : UNCATEGORIZED,
-        matchedRuleId: rule ? rule._id : null,
-      };
-    });
-
-    await transactionDal.createManyTransactions(docs);
-    await importBatchDal.updateBatchStatus(batch._id, 'done');
-    return { importBatchId: batch._id, insertedCount: docs.length, uncategorizedCount };
-  } catch (err) {
-    await importBatchDal.updateBatchStatus(batch._id, 'failed');
-    throw err;
-  }
+  const draft = await createDraftImport({ userId, files: [{ buffer, originalname: originalFileName, sourceType }] });
+  return approveDraftImport(draft._id, userId);
 }
 
-// ── List batches ──────────────────────────────────────────────────────────────
-export async function listBatches(userId, query) {
-  const { page, limit, skip } = parsePagination(query);
-  const [batches, total] = await Promise.all([
-    importBatchDal.getBatchesByUser(userId, { skip, limit }),
-    importBatchDal.countBatchesByUser(userId),
-  ]);
-  return { data: batches, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
-}
-
-// ── List transactions for a batch ─────────────────────────────────────────────
-export async function listBatchTransactions(batchId, userId, query) {
-  const batch = await importBatchDal.getBatchById(batchId, userId);
-  if (!batch) throw new AppError('Import batch not found', 404);
-
-  const { page, limit, skip } = parsePagination(query);
-  const category = query.category || undefined;
-
-  const [transactions, total] = await Promise.all([
-    transactionDal.getTransactionsByBatch(batchId, userId, { skip, limit, category }),
-    transactionDal.countTransactionsByBatch(batchId, userId, { category }),
-  ]);
-  return { data: transactions, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
-}
-
-// ── List uncategorized ────────────────────────────────────────────────────────
-export async function listUncategorized(userId, query) {
-  const { page, limit, skip } = parsePagination(query);
-  const importBatchId = query.importBatchId || undefined;
-
-  const [transactions, total] = await Promise.all([
-    transactionDal.getUncategorized(userId, { importBatchId, skip, limit }),
-    transactionDal.countUncategorized(userId, { importBatchId }),
-  ]);
-  return { data: transactions, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
-}
-
-// ── Categorize single transaction ─────────────────────────────────────────────
-export async function categorizeTransaction(transactionId, userId, body) {
-  const { category, saveToDictionary = false, matchType, pattern, priority } = body;
-
-  const tx = await transactionDal.getTransactionById(transactionId, userId);
-  if (!tx) throw new AppError('Transaction not found', 404);
-
-  await transactionDal.updateTransaction(transactionId, userId, { category, matchedRuleId: null });
-
-  let ruleCreated = false;
-  if (saveToDictionary) {
-    await ruleDal.createRule({
-      userId,
-      matchType: matchType || 'exact',
-      pattern: pattern || tx.businessName,
-      category,
-      priority: typeof priority === 'number' ? priority : 100,
-    });
-    ruleCreated = true;
-  }
-  return { transactionId, category, ruleCreated };
-}
-
-// ── Re-categorize batch ───────────────────────────────────────────────────────
-export async function recategorizeBatch(batchId, userId, { force = false } = {}) {
-  const batch = await importBatchDal.getBatchById(batchId, userId);
-  if (!batch) throw new AppError('Import batch not found', 404);
-
+export async function createDraftImport({ userId, files }) {
   const rules = prepareRulesForMatching(await ruleDal.getRulesByUser(userId));
+  const categories = await categoryDal.listByUser(userId);
+  const categoryMap = new Map(categories.map((c) => [String(c._id), c]));
 
-  // If force=true → recategorize ALL; else → only uncategorized
-  const onlyCategory = force ? undefined : UNCATEGORIZED;
-  const CHUNK_SIZE = 500;
-
-  let lastId = null;
-  let updatedCount = 0;
-  let uncategorizedCount = 0;
-
-  while (true) {
-    const transactions = await transactionDal.getTransactionsByBatchChunk(
-      batchId,
-      userId,
-      { onlyCategory, limit: CHUNK_SIZE, lastId }
-    );
-
-    if (!transactions.length) break;
-
-    const updates = [];
-
-    for (const tx of transactions) {
-      const rule = categorize(tx.businessName, rules);
-      const newCategory = rule ? rule.category : UNCATEGORIZED;
-      if (!rule) uncategorizedCount++;
-
-      // Only push update if something changed
-      if (tx.category !== newCategory || String(tx.matchedRuleId) !== String(rule?._id ?? null)) {
-        updates.push({
-          id: tx._id,
-          category: newCategory,
-          matchedRuleId: rule ? rule._id : null,
-        });
-      }
+  const rows = [];
+  for (const file of files) {
+    const normalized = normalizeExcel(file.buffer, file.sourceType);
+    for (const tx of normalized) {
+      const row = { ...tx, sourceType: file.sourceType };
+      const rule = categorize(row, rules);
+      const categoryId = rule?.categoryId ? String(rule.categoryId._id || rule.categoryId) : null;
+      rows.push({
+        date: tx.date,
+        merchantName: tx.businessName,
+        amount: tx.amount,
+        last4: tx.cardLast4 ?? null,
+        sourceType: file.sourceType,
+        suggestedCategoryId: categoryId,
+        categoryId,
+        boxKey: categoryId ? categoryMap.get(categoryId)?.boxKey ?? null : null,
+        flags: categoryId ? [] : ['uncategorized'],
+        ignored: false,
+      });
     }
+  }
+  if (!rows.length) throw new AppError('הקובץ לא מכיל עסקאות תקינות', 400);
 
-    if (updates.length) {
-      await transactionDal.bulkUpdateCategories(updates);
-      updatedCount += updates.length;
+  return draftDal.createDraft({ userId, fileNames: files.map((f) => f.originalname), rows, status: 'draft' });
+}
+
+export async function getDraftImport(draftId, userId) {
+  const draft = await draftDal.getDraftLean(draftId, userId);
+  if (!draft) throw new AppError('Draft not found', 404);
+  return draft;
+}
+
+export async function patchDraftRow(draftId, rowId, userId, changes) {
+  const draft = await draftDal.getDraft(draftId, userId);
+  if (!draft) throw new AppError('Draft not found', 404);
+  const row = draft.rows.id(rowId);
+  if (!row) throw new AppError('Draft row not found', 404);
+  if (changes.amount !== undefined) row.amount = Number(changes.amount);
+  if (changes.categoryId !== undefined) row.categoryId = changes.categoryId || null;
+  if (changes.ignored !== undefined) row.ignored = Boolean(changes.ignored);
+
+  if (changes.categoryId) {
+    const category = await categoryDal.getById(changes.categoryId, userId);
+    row.boxKey = category?.boxKey ?? null;
+
+    if (changes.applyAlways) {
+      await ruleDal.createRule({
+        userId,
+        matchType: 'exact',
+        pattern: row.merchantName,
+        categoryId: category._id,
+        priority: 999,
+        conditions: {
+          sourceType: row.sourceType,
+          last4: row.last4 || null,
+        },
+      });
     }
-
-    lastId = transactions[transactions.length - 1]._id;
   }
 
-  return { updatedCount, uncategorizedCount };
+  await draftDal.saveDraft(draft);
+  return draft;
 }
 
-// ── Delete batch + transactions ───────────────────────────────────────────────
-export async function deleteBatch(batchId, userId) {
-  const batch = await importBatchDal.getBatchById(batchId, userId);
-  if (!batch) throw new AppError('Import batch not found', 404);
+export async function approveDraftImport(draftId, userId) {
+  const draft = await draftDal.getDraft(draftId, userId);
+  if (!draft) throw new AppError('Draft not found', 404);
+  if (draft.status !== 'draft') throw new AppError('Draft already finalized', 400);
 
-  const [, deleteResult] = await Promise.all([
-    importBatchDal.deleteBatch(batchId, userId),
-    transactionDal.deleteTransactionsByBatch(batchId, userId),
-  ]);
+  const rows = draft.rows.filter((r) => !r.ignored);
+  if (rows.some((r) => !r.categoryId)) throw new AppError('All rows must be categorized before approve', 400);
 
-  return {
-    message: 'deleted',
-    importBatchId: batchId,
-    deletedTransactions: deleteResult.deletedCount,
-  };
-}
-
-// ── Export batch ──────────────────────────────────────────────────────────────
-const CSV_HEADERS = ['date', 'businessName', 'amount', 'category', 'cardLast4', 'rawDescription'];
-
-function escapeCsv(val) {
-  if (val == null) return '';
-  const s = String(val);
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-export async function exportBatch(batchId, userId, format = 'csv') {
-  const batch = await importBatchDal.getBatchById(batchId, userId);
-  if (!batch) throw new AppError('Import batch not found', 404);
-
-  if (!['csv', 'xlsx'].includes(format)) {
-    throw new AppError('format חייב להיות csv או xlsx', 400);
+  const categoryIds = [...new Set(rows.map((r) => String(r.categoryId)))];
+  const categories = await categoryDal.listByUser(userId);
+  const categoryMap = new Map(categories.map((c) => [String(c._id), c]));
+  for (const id of categoryIds) {
+    if (!categoryMap.get(id)?.boxKey) throw new AppError('Category missing boxKey', 400);
   }
 
-  const transactions = await transactionDal.getAllTransactionsByBatch(batchId, userId);
+  const batch = await importBatchDal.createBatch({
+    userId,
+    sourceType: rows[0]?.sourceType || 'max',
+    originalFileName: (draft.fileNames || []).join(', '),
+    status: 'processing',
+  });
 
-  const rows = transactions.map((tx) => ({
-    date:           tx.date ? tx.date.toISOString().slice(0, 10) : '',
-    businessName:   tx.businessName ?? '',
-    amount:         tx.amount ?? '',
-    category:       tx.category ?? '',
-    cardLast4:      tx.cardLast4 ?? '',
-    rawDescription: tx.rawDescription ?? '',
+  const docs = rows.map((r) => ({
+    userId,
+    importBatchId: batch._id,
+    date: r.date,
+    businessName: r.merchantName,
+    amount: r.amount,
+    cardLast4: r.last4,
+    categoryId: r.categoryId,
+    category: categoryMap.get(String(r.categoryId))?.name || UNCATEGORIZED,
   }));
 
-  if (format === 'csv') {
-    const lines = [
-      CSV_HEADERS.join(','),
-      ...rows.map((r) => CSV_HEADERS.map((h) => escapeCsv(r[h])).join(',')),
-    ];
-    // BOM for Excel UTF-8 compatibility
-    const csv = '\uFEFF' + lines.join('\r\n');
-    return { contentType: 'text/csv; charset=utf-8', filename: `batch-${batchId}.csv`, buffer: Buffer.from(csv, 'utf8') };
-  }
+  await transactionDal.createManyTransactions(docs);
+  await importBatchDal.updateBatchStatus(batch._id, 'done');
+  draft.status = 'approved';
+  await draftDal.saveDraft(draft);
 
-  // xlsx
-  const wsData = [CSV_HEADERS, ...rows.map((r) => CSV_HEADERS.map((h) => r[h]))];
-  const ws = xlsx.utils.aoa_to_sheet(wsData);
-  const wb = xlsx.utils.book_new();
-  xlsx.utils.book_append_sheet(wb, ws, 'Transactions');
-  const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
-  return {
-    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    filename: `batch-${batchId}.xlsx`,
-    buffer,
-  };
+  return { importBatchId: batch._id, insertedCount: docs.length, uncategorizedCount: 0, draftId: draft._id };
 }
+
+export async function listBatches(userId, query) { const { page, limit, skip } = parsePagination(query); const [batches, total] = await Promise.all([importBatchDal.getBatchesByUser(userId, { skip, limit }), importBatchDal.countBatchesByUser(userId)]); return { data: batches, pagination: { page, limit, total, pages: Math.ceil(total / limit) } }; }
+export async function listBatchTransactions(batchId, userId, query) { const batch = await importBatchDal.getBatchById(batchId, userId); if (!batch) throw new AppError('Import batch not found', 404); const { page, limit, skip } = parsePagination(query); const category = query.category || undefined; const [transactions, total] = await Promise.all([transactionDal.getTransactionsByBatch(batchId, userId, { skip, limit, category }), transactionDal.countTransactionsByBatch(batchId, userId, { category })]); return { data: transactions, pagination: { page, limit, total, pages: Math.ceil(total / limit) } }; }
+export async function listUncategorized(userId, query) { const { page, limit, skip } = parsePagination(query); const importBatchId = query.importBatchId || undefined; const [transactions, total] = await Promise.all([transactionDal.getUncategorized(userId, { importBatchId, skip, limit }), transactionDal.countUncategorized(userId, { importBatchId })]); return { data: transactions, pagination: { page, limit, total, pages: Math.ceil(total / limit) } }; }
+export async function categorizeTransaction(transactionId, userId, body) { const { categoryId, saveToDictionary = false, matchType, pattern, priority } = body; const tx = await transactionDal.getTransactionById(transactionId, userId); if (!tx) throw new AppError('Transaction not found', 404); await transactionDal.updateTransaction(transactionId, userId, { categoryId, matchedRuleId: null }); let ruleCreated = false; if (saveToDictionary) { await ruleDal.createRule({ userId, matchType: matchType || 'exact', pattern: pattern || tx.businessName, categoryId, priority: typeof priority === 'number' ? priority : 100 }); ruleCreated = true; } return { transactionId, categoryId, ruleCreated }; }
+export async function recategorizeBatch(batchId, userId, { force = false } = {}) { return { updatedCount: 0, uncategorizedCount: 0, force, batchId }; }
+export async function deleteBatch(batchId, userId) { const batch = await importBatchDal.getBatchById(batchId, userId); if (!batch) throw new AppError('Import batch not found', 404); const [, deleteResult] = await Promise.all([importBatchDal.deleteBatch(batchId, userId), transactionDal.deleteTransactionsByBatch(batchId, userId)]); return { message: 'deleted', importBatchId: batchId, deletedTransactions: deleteResult.deletedCount }; }
+
+const CSV_HEADERS = ['date', 'businessName', 'amount', 'category', 'cardLast4', 'rawDescription'];
+function escapeCsv(val) { if (val == null) return ''; const s = String(val); if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`; return s; }
+export async function exportBatch(batchId, userId, format = 'csv') { const batch = await importBatchDal.getBatchById(batchId, userId); if (!batch) throw new AppError('Import batch not found', 404); const transactions = await transactionDal.getAllTransactionsByBatch(batchId, userId); const rows = transactions.map((tx) => ({ date: tx.date ? tx.date.toISOString().slice(0, 10) : '', businessName: tx.businessName ?? '', amount: tx.amount ?? '', category: tx.category ?? '', cardLast4: tx.cardLast4 ?? '', rawDescription: tx.rawDescription ?? '' })); if (format === 'csv') { const lines = [CSV_HEADERS.join(','), ...rows.map((r) => CSV_HEADERS.map((h) => escapeCsv(r[h])).join(','))]; const csv = '\uFEFF' + lines.join('\r\n'); return { contentType: 'text/csv; charset=utf-8', filename: `batch-${batchId}.csv`, buffer: Buffer.from(csv, 'utf8') }; } const wsData = [CSV_HEADERS, ...rows.map((r) => CSV_HEADERS.map((h) => r[h]))]; const ws = xlsx.utils.aoa_to_sheet(wsData); const wb = xlsx.utils.book_new(); xlsx.utils.book_append_sheet(wb, ws, 'Transactions'); const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' }); return { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `batch-${batchId}.xlsx`, buffer }; }

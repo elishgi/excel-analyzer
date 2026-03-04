@@ -7,6 +7,7 @@ const links = [
   { to: '/upload',       label: 'העלאה',   icon: '⬆' },
   { to: '/uncategorized',label: 'חריגים',  icon: '⚑' },
   { to: '/dictionary',   label: 'מילון',   icon: '≡' },
+  { to: '/categories',   label: 'קטגוריות',   icon: '⌗' },
 ];
 
 export default function Navbar() {

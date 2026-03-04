@@ -10,6 +10,7 @@ import Upload       from '../pages/Upload.jsx';
 import BatchDetails from '../pages/BatchDetails.jsx';
 import Uncategorized from '../pages/Uncategorized.jsx';
 import Dictionary   from '../pages/Dictionary.jsx';
+import Categories   from '../pages/Categories.jsx';
 
 function Layout({ children }) {
   return (
@@ -44,6 +45,9 @@ export default function AppRouter() {
           } />
           <Route path="/dictionary" element={
             <ProtectedRoute><Layout><Dictionary /></Layout></ProtectedRoute>
+          } />
+          <Route path="/categories" element={
+            <ProtectedRoute><Layout><Categories /></Layout></ProtectedRoute>
           } />
 
           {/* Default */}
