@@ -1,7 +1,16 @@
 import * as dal from '../dal/dictionaryRule.dal.js';
 import { AppError } from '../utils/AppError.js';
 
-export const getRules = (userId) => dal.getRulesByUser(userId);
+export async function getRules(userId) {
+  const rules = await dal.getRulesByUser(userId);
+  const grouped = {};
+  for (const rule of rules) {
+    const categoryKey = rule.categoryId?._id?.toString() || 'unknown';
+    if (!grouped[categoryKey]) grouped[categoryKey] = { category: rule.categoryId || null, rules: [] };
+    grouped[categoryKey].rules.push(rule);
+  }
+  return Object.values(grouped);
+}
 
 export const addRule = (userId, body) => dal.createRule({ ...body, userId });
 

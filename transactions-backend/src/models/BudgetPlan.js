@@ -9,6 +9,20 @@ const groupItemSchema = new mongoose.Schema({
   manualActual: { type: Number, min: 0, default: null },
 }, { _id: false });
 
+
+const manualRowSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true },
+  target: { type: Number, default: 0 },
+  actual: { type: Number, default: 0 },
+  isTemplateSeeded: { type: Boolean, default: false },
+  templateRowId: { type: mongoose.Schema.Types.ObjectId, ref: 'TemplateRow', default: null },
+}, { timestamps: true });
+
+const categoryTargetSchema = new mongoose.Schema({
+  categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
+  target: { type: Number, default: 0 },
+}, { _id: false });
+
 const manualCellSchema = new mongoose.Schema({
   path: { type: String, required: true, trim: true },
   value: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -28,6 +42,17 @@ const budgetPlanSchema = new mongoose.Schema({
     match: /^\d{4}-\d{2}$/,
   },
   notes: { type: String, default: '' },
+
+  locked: { type: Boolean, default: false },
+  manualRows: {
+    INCOME: { type: [manualRowSchema], default: [] },
+    SUBSCRIPTIONS: { type: [manualRowSchema], default: [] },
+    VARIABLE: { type: [manualRowSchema], default: [] },
+    SAVINGS: { type: [manualRowSchema], default: [] },
+    TITHES: { type: [manualRowSchema], default: [] },
+    MANUAL_EXPENSES: { type: [manualRowSchema], default: [] },
+  },
+  categoryTargets: { type: [categoryTargetSchema], default: [] },
   targets: {
     fixedBills: amountField,
     variableExpenses: amountField,

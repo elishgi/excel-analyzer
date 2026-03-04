@@ -55,7 +55,7 @@ export function validateLogin({ email, password }) {
  * @throws {AppError} 400 on invalid input
  */
 export function validateDictionaryRule(body, { isUpdate = false } = {}) {
-  const { matchType, pattern, category, priority } = body;
+  const { matchType, pattern, categoryId, priority } = body;
   const details = [];
 
   if (!isUpdate || matchType !== undefined) {
@@ -85,9 +85,9 @@ export function validateDictionaryRule(body, { isUpdate = false } = {}) {
       }
     }
   }
-  if (!isUpdate || category !== undefined) {
-    if (!category || typeof category !== 'string' || category.trim().length === 0) {
-      details.push('category is required and must be a non-empty string');
+  if (!isUpdate || categoryId !== undefined) {
+    if (!categoryId || typeof categoryId !== 'string') {
+      details.push('categoryId is required');
     }
   }
   if (!isUpdate || priority !== undefined) {

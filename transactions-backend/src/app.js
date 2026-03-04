@@ -12,6 +12,7 @@ import importsRouter, { transactionsRouter } from './routes/imports.routes.js';
 import reportsRouter     from './routes/reports.routes.js';
 import budgetsRouter     from './routes/budgets.routes.js';
 import dashboardRouter   from './routes/dashboard.routes.js';
+import categoriesRouter  from './routes/categories.routes.js';
 import { errorHandler }  from './middlewares/error.middleware.js';
 
 const app = express();
@@ -38,6 +39,7 @@ app.use('/api/transactions', transactionsRouter);
 app.use('/api/reports',      reportsRouter);
 app.use('/api/budgets',      budgetsRouter);
 app.use('/api/dashboard',    dashboardRouter);
+app.use('/api/categories',   categoriesRouter);
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((req, res) => {
